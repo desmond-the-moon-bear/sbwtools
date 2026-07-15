@@ -1,0 +1,17 @@
+CompileFlags:
+  Add:
+    - "-std=c23"
+    - "-Wall"
+    - "-Wextra"
+    - "-Wshadow"
+    - "-Wno-missing-field-initializers"
+    - "-I../libsais/include"
+    - "-I../../libsais/include"
+
+---
+
+If:
+  PathMatch: .*\.h
+CompileFlags:
+  Add:
+    - "-xc-header"
