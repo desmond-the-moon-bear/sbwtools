@@ -1,17 +1,49 @@
 #![allow(unused)]
 
+use clap::{Parser, Subcommand};
 use jseqio::reader::*;
 use std::path::PathBuf;
 
+#[derive(Parser)]
+#[command(about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+#[command(about, long_about)]
+enum Commands {
+    /// Concatenate the input sequences stored in files, given in a list file.
+    #[command(name="concat")]
+    Concatenate {
+        #[arg(short='l')]
+        file_list_path: PathBuf,
+
+        #[arg(short='d')]
+        directory_with_sequence_files: Option<PathBuf>,
+
+        #[arg(short='o')]
+        output_path: Option<PathBuf>,
+    },
+    /// Truncate numbers from LCP array.
+    #[command(name="trunc")]
+    TruncateLcp,
+    /// Make bitvectors from BWT.
+    #[command(name="bwt")]
+    BwtBitvectors,
+}
+
 fn main() {
-    println!("._.");
+    let Cli { command } = Cli::parse();
+    // todo(mk)...
 }
 
 //
 // Code plagiarised from the swbt crates.
 // {
 //
-trait SeqStream{
+trait SeqStream {
     fn stream_next(&mut self) -> Option<&[u8]>;
 }
 
@@ -40,7 +72,7 @@ impl<'a> SeqReader<'a> {
             paths,
             next_idx: 0,
             current: None,
-            local_buf: vec![]
+            local_buf: vec![],
         }
     }
 }
@@ -76,7 +108,12 @@ impl SeqStream for SeqReader<'_> {
 
 impl<'a> Clone for SeqReader<'a> {
     fn clone(&self) -> Self {
-        Self { paths: self.paths, next_idx: 0, current: None, local_buf: vec![] }
+        Self {
+            paths: self.paths,
+            next_idx: 0,
+            current: None,
+            local_buf: vec![],
+        }
     }
 }
 //

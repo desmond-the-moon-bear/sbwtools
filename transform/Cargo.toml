@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 jseqio = { version = "0.1.7" }
 simple-sds-sbwt = { version = "0.3.3" }
+clap = { version = "4.6.1", features = ["derive"] }
