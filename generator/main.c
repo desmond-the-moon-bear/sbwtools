@@ -107,6 +107,13 @@ void generate_from_file(int argc, char *argv[]) {
     err = libsais64_lcp(plcp, sa, lcp, len);
     free(sa);
     free(plcp);
+    // {
+    //     printf("%ld", lcp[0]);
+    //     for(int i = 1; i < len; ++i) {
+    //         printf(", %ld", lcp[i]);
+    //     }
+    //     printf("\n");
+    // }
     munmap(lcp, lcp_len);
     if (err < 0) {
         printf("lcp error\n");

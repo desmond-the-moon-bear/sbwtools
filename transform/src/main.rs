@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+mod make;
+
 use clap::{Parser, Subcommand};
 use jseqio::reader::*;
 use sbwt::SeqStream;
@@ -12,6 +14,8 @@ use simple_sds_sbwt::serialize::Serialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write, Read};
 use std::path::PathBuf;
+
+use make::*;
 
 #[derive(Parser)]
 #[command(about)]
@@ -133,10 +137,11 @@ fn concatenate(
 }
 
 pub fn write_concatenation<SS: SeqStream + Send, W: std::io::Write>(mut stream: SS, output: &mut W) -> std::io::Result<()> {
+    todo!("(mk): investigage what is the best way to concatenate the input sequences");
     write!(output, "$")?;
     while let Some(sequence) = stream.stream_next() {
-        output.write_all(sequence)?;
         write!(output, "$")?;
+        output.write_all(sequence)?;
     }
     Ok(())
 }
@@ -158,7 +163,7 @@ fn truncate_lcp<const BIG_ENDIAN: bool>(
 
     let mut bytes = [0_u8; size_of::<u64>()];
     let k_bit_width = u32::BITS - max_k.leading_zeros();
-    let output_byte_count = k_bit_width.div_ceil(u8::BITS) as usize;
+    let output_byte_count = (k_bit_width.div_ceil(u8::BITS) as usize).next_power_of_two();
 
     while input_reader.read_exact(&mut bytes).is_ok() {
         let number = if BIG_ENDIAN {
@@ -201,14 +206,8 @@ fn bwt_bit_vectors(
     let mut byte = [0_u8];
     let mut index: usize = 0;
     while input_reader.read_exact(&mut byte).is_ok() {
-        match byte[0] {
-            b'$' => raw_vectors[0].set_bit(index, true),
-            b'A' => raw_vectors[1].set_bit(index, true),
-            b'C' => raw_vectors[2].set_bit(index, true),
-            b'G' => raw_vectors[3].set_bit(index, true),
-            b'T' => raw_vectors[4].set_bit(index, true),
-            _ => {}
-        };
+        let char_index = char_index(byte[0]);
+        raw_vectors[char_index].set_bit(index, true);
         index += 1;
     }
 
