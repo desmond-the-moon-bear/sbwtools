@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use jseqio::reader::*;
 use sbwt::SeqStream;
 
-use simple_sds_sbwt::ops::{Rank, Select};
+use simple_sds_sbwt::ops::{Rank, Select, PredSucc};
 use simple_sds_sbwt::raw_vector::{RawVector, AccessRaw};
 use simple_sds_sbwt::bit_vector::BitVector;
 use simple_sds_sbwt::serialize::Serialize;
@@ -81,6 +81,23 @@ enum Commands {
         /// The path to the output LCP. Defaults to "./result.bwtb".
         #[arg(short = 'o')]
         output_path: Option<PathBuf>,
+    },
+    #[command(name = "build")]
+    Build {
+        /// The path to the input BWT bitvectors.
+        #[arg(short = 'b')]
+        bwtb_path: PathBuf,
+
+        /// The path to the input (truncated) LCP.
+        #[arg(short = 'l')]
+        lcpt_path: PathBuf,
+
+        /// The value of k.
+        #[arg(short = 'k')]
+        k: u32,
+        // The path to the output.
+        // #[arg(short = 'o')]
+        // output_path: Option<PathBuf>,
     }
 }
 
@@ -113,6 +130,13 @@ fn main() {
         } => {
             bwt_bit_vectors(input_path, output_path).unwrap();
         },
+        Build {
+            bwtb_path,
+            lcpt_path,
+            k
+        } => {
+            build(bwtb_path, lcpt_path, k).unwrap()
+        },
     };
 }
 
@@ -137,12 +161,12 @@ fn concatenate(
 }
 
 pub fn write_concatenation<SS: SeqStream + Send, W: std::io::Write>(mut stream: SS, output: &mut W) -> std::io::Result<()> {
-    todo!("(mk): investigage what is the best way to concatenate the input sequences");
     write!(output, "$")?;
     while let Some(sequence) = stream.stream_next() {
         write!(output, "$")?;
         output.write_all(sequence)?;
     }
+    write!(output, "$")?;
     Ok(())
 }
 
@@ -220,6 +244,75 @@ fn bwt_bit_vectors(
     for bit_vector in bit_vectors {
         bit_vector.serialize(&mut output_writer)?;
     }
+    Ok(())
+}
+
+fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, k: u32) -> std::io::Result<()> {
+    let bwtb_file = File::open(bwtb_path)?;
+    let mut lcpt_file = File::open(lcpt_path)?;
+
+    let mut bwtb_reader = BufReader::new(bwtb_file);
+    let bwt = Bwt::load(&mut bwtb_reader)?;
+
+    let lcpt_metadata = lcpt_file.metadata()?;
+    let mut lcp_data: Vec<u8> = Vec::with_capacity(lcpt_metadata.len() as usize);
+    lcpt_file.read_to_end(&mut lcp_data)?;
+
+    let k_bit_width = u32::BITS - k.leading_zeros();
+    let byte_count = (k_bit_width.div_ceil(u8::BITS) as usize).next_power_of_two();
+    let mut lcp = if byte_count < 2 {
+        Lcp::new::<u8>(lcp_data)
+    } else if byte_count < 4 {
+        Lcp::new::<u16>(lcp_data)
+    } else {
+        Lcp::new::<u32>(lcp_data)
+    };
+
+    let len = bwt.len();
+    let k = k as usize;
+
+    for item in &mut lcp {
+        print!("{} ", item);
+    }
+    println!();
+    lcp.reset();
+
+    // let mut ranges = RawVector::with_len(len, false);
+    // for (index, item) in (&mut lcp).enumerate() {
+    //     if item < k - 1 {
+    //         ranges.set_bit(index, true);
+    //     }
+    // }
+    // let mut ranges = BitVector::from(ranges);
+    // ranges.enable_pred_succ();
+    //
+
+    // let mut shorter_than_k = RawVector::with_len(len, false);
+    // let mut equal_to_k     = RawVector::with_len(len, false);
+    // {
+    //     let mut order = 0;
+    //     let mut current_length = 0;
+    //     for _ in 0..len {
+    //         let (next_order, character) = bwt.lf_step(order);
+    //         order = next_order;
+    //         if character == b'$' {
+    //             current_length = 0;
+    //         } else {
+    //             current_length += 1;
+    //         }
+    //         if current_length < k {
+    //             shorter_than_k.set_bit(order, true);
+    //         } else if current_length == k {
+    //             equal_to_k.set_bit(order, true);
+    //         }
+    //     }
+    // }
+
+    let mut keep_shorter   = RawVector::with_len(len, false);
+    let mut keep_letter    = RawVector::with_len(len, false);
+
+    todo!();
+
     Ok(())
 }
 

@@ -6,7 +6,7 @@ use simple_sds_sbwt::ops::BitVec;
 use super::*;
 
 pub const TABLE_SIZE: usize = u8::MAX as usize + 1;
-pub const CHAR_TO_INDEX_TABLE: [usize; TABLE_SIZE] = make_char_to_index_table();
+pub const CHAR_TO_INDEX: [usize; TABLE_SIZE] = make_char_to_index_table();
 pub const INDEX_TO_CHAR: [u8; 5] = [b'$', b'A', b'C', b'G', b'T'];
 
 const fn make_char_to_index_table() -> [usize; TABLE_SIZE] {
@@ -21,7 +21,7 @@ const fn make_char_to_index_table() -> [usize; TABLE_SIZE] {
 
 #[inline(always)]
 pub fn char_index(byte: u8) -> usize {
-    CHAR_TO_INDEX_TABLE[byte as usize]
+    CHAR_TO_INDEX[byte as usize]
 }
 
 pub struct Bwt {
@@ -52,24 +52,29 @@ impl Bwt {
         unreachable!("The character at the index should have a corresponding bitvector in the BWT.");
     }
 
+    #[inline]
     pub fn character(&self, index: usize) -> u8 {
         let char_index = self.get_char_index(index);
         INDEX_TO_CHAR[char_index]
     }
 
-    pub fn lf_step(&self, index: usize) -> usize {
+    #[inline]
+    pub fn lf_step(&self, index: usize) -> (usize, u8) {
         let char_index = self.get_char_index(index);
-        self.counts[char_index] + self.data[char_index].rank(index)
+        let order = self.counts[char_index] + self.data[char_index].rank(index);
+        let character = INDEX_TO_CHAR[char_index];
+        (order, character)
     }
 
+    #[inline]
     pub fn inverse_lf_step(&self, index: usize) -> usize {
         assert!(index < self.data[0].len());
         for char_index in (0..self.counts.len()).rev() {
             if index >= self.counts[char_index] {
                 let rank_within_count = index - self.counts[char_index];
-                let result = self.data[char_index].select(rank_within_count)
+                let order = self.data[char_index].select(rank_within_count)
                     .expect("The given bit should exist.");
-                return result;
+                return order;
             }
         }
         unreachable!()
@@ -86,20 +91,42 @@ impl Bwt {
         let result = Self::new(data);
         Ok(result)
     }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.data[0].len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.data[0].len() == 0
+    }
 }
 
-pub struct LcpData<E> {
+pub struct Lcp {
     data: Vec<u8>,
     len: usize,
-    _marker: std::marker::PhantomData<E>,
+    width: usize,
+    offset: usize,
 }
 
-impl<E> LcpData<E> {
+impl Lcp {
     #[inline]
-    fn new(data: Vec<u8>) -> Self {
+    pub fn new<E>(data: Vec<u8>) -> Self {
+        assert!(size_of::<E>() <= size_of::<usize>());
         assert!(data.len().is_multiple_of(size_of::<E>()));
         let len = data.len() / size_of::<E>();
-        Self { data, len, _marker: Default::default() }
+        Self {
+            data,
+            len,
+            width: size_of::<E>(),
+            offset: 0,
+        }
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.offset = 0;
     }
 
     #[inline]
@@ -113,29 +140,26 @@ impl<E> LcpData<E> {
     }
 }
 
-trait Lcp {
-    fn get(&self, index: usize) -> usize;
-    // fn iter(&self) -> LcpIter;
-}
-
-macro_rules! impl_lcp_for_lcp_data {
-    ($item:ty) => {
-        impl Lcp for LcpData<$item> {
-            fn get(&self, index: usize) -> usize {
-                assert!(index < self.len);
-                let begin = index * size_of::<$item>();
-                let end = begin + size_of::<$item>();
-                let bytes = self.data[begin..end].try_into().expect("Slice should be correct size.");
-                let value = <$item>::from_le_bytes(bytes);
-                value as usize
-            }
+impl Iterator for Lcp {
+    type Item = usize;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.data.len() {
+            return None;
         }
-    };
+        let end = self.offset + self.width;
+        let mut bytes: [u8; 8] = [0_u8; 8];
+        let src = &self.data[self.offset..end];
+        bytes[0..self.width].copy_from_slice(src);
+        let value = usize::from_le_bytes(bytes);
+        let mut v: usize = 0;
+        self.offset = end;
+        Some(value)
+    }
 }
 
-impl_lcp_for_lcp_data!(u8);
-impl_lcp_for_lcp_data!(u16);
-impl_lcp_for_lcp_data!(u32);
-
-
+impl From<Lcp> for Vec<u8> {
+    fn from(value: Lcp) -> Self {
+        value.data
+    }
+}
 
