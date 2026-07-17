@@ -25,8 +25,8 @@ pub fn char_index(byte: u8) -> usize {
 }
 
 pub struct Bwt {
-    data: [BitVector; 5],
-    counts: [usize; 5],
+    pub data: [BitVector; 5],
+    pub counts: [usize; 5],
 }
 
 impl Bwt {
@@ -122,6 +122,11 @@ impl Lcp {
             width: size_of::<E>(),
             offset: 0,
         }
+    }
+
+    #[inline]
+    pub fn skip(&mut self, count: usize) {
+        self.offset += self.width * count;
     }
 
     #[inline]
