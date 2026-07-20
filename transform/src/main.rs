@@ -2,7 +2,7 @@
 
 mod make;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use sbwt::SeqStream;
 
 use simple_sds_sbwt::ops::{BitVec, PredSucc, Rank, Select};
@@ -44,6 +44,9 @@ enum Commands {
         /// Output path for the concatenated input sequences. Defaults to "./result.concat".
         #[arg(short = 'o')]
         output_path: Option<PathBuf>,
+
+        #[arg(value_enum, short = 's', default_value_t=Separator::Dollar)]
+        separator: Separator,
     },
     /// Truncate numbers from LCP array.
     ///
@@ -102,6 +105,16 @@ enum Commands {
     }
 }
 
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[value()]
+enum Separator {
+    #[value()]
+    #[default]
+    Dollar,
+    #[value()]
+    Null,
+}
+
 fn main() {
     let Cli { command } = Cli::parse();
     use Commands::*;
@@ -110,8 +123,9 @@ fn main() {
             file_list_path,
             directory_with_sequence_files,
             output_path,
+            separator,
         } => {
-            concatenate(file_list_path, directory_with_sequence_files, output_path).unwrap();
+            concatenate(file_list_path, directory_with_sequence_files, output_path, separator).unwrap();
         }
         TruncateLcp {
             input_path,
@@ -146,6 +160,7 @@ fn concatenate(
     file_list_path: PathBuf,
     directory_with_sequence_files: Option<PathBuf>,
     output_path: Option<PathBuf>,
+    separator: Separator,
 ) -> std::io::Result<()> {
     let input_sequences = read_lines(&file_list_path)?;
     if let Some(dir) = directory_with_sequence_files {
@@ -158,17 +173,30 @@ fn concatenate(
     let output_file = File::create(output_path)?;
     let mut output_writer = BufWriter::new(output_file);
     let mut sequence_reader = SeqReader::new(&input_sequences);
-    write_concatenation(sequence_reader, &mut output_writer)?;
+    use Separator::*;
+    match separator {
+        Dollar => { write_concatenation(sequence_reader, &mut output_writer, '$')?; },
+        Null => { write_concatenation_gsa(sequence_reader, &mut output_writer)?; },
+    }
     Ok(())
 }
 
-pub fn write_concatenation<SS: SeqStream + Send, W: std::io::Write>(mut stream: SS, output: &mut W) -> std::io::Result<()> {
-    write!(output, "$")?;
+pub fn write_concatenation<SS: SeqStream + Send, W: std::io::Write>(mut stream: SS, output: &mut W, separator: char) -> std::io::Result<()> {
+    write!(output, "{}", separator)?;
     while let Some(sequence) = stream.stream_next() {
-        write!(output, "$")?;
+        write!(output, "{}", separator)?;
         output.write_all(sequence)?;
     }
-    write!(output, "$")?;
+    write!(output, "{}", separator)?;
+    Ok(())
+}
+
+pub fn write_concatenation_gsa<SS: SeqStream + Send, W: std::io::Write>(mut stream: SS, output: &mut W) -> std::io::Result<()> {
+    write!(output, "\0")?;
+    while let Some(sequence) = stream.stream_next() {
+        output.write_all(sequence)?;
+        write!(output, "\0")?;
+    }
     Ok(())
 }
 
@@ -260,7 +288,7 @@ fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k
         Some(value) => value,
         None => PathBuf::from("./result.bsbwt"),
     };
-    let mut output_file = File::options().write(true).open(output_path)?;
+    let mut output_file = File::create(output_path)?;
 
     let lcpt_metadata = lcpt_file.metadata()?;
     let mut lcp_data: Vec<u8> = Vec::with_capacity(lcpt_metadata.len() as usize);
@@ -278,31 +306,22 @@ fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k
 
     let k = k as usize;
 
-    let separator_count = bwt.data[char_index(b'$')].count_ones();
-    let ranges = calculate_ranges(&mut lcp, k, separator_count);
+    let (shorter_than_k, equal_to_k, regions, k_regions) = calculate_auxiliary_bitvectors(&bwt, &mut lcp, k);
+    drop(lcp);
 
-    let (shorter_than_k, equal_to_k) = calculate_length_marker_bitvectors(&bwt, k);
     let (keep_suffix, keep_letter) = calculate_dummy_marks(
-        &bwt, &mut lcp, k, &ranges, &shorter_than_k, &equal_to_k
+        &bwt, k, &regions, &k_regions, &shorter_than_k, &equal_to_k
     );
-
+    drop(regions);
     drop(equal_to_k);
-    let sets = build_sets(&bwt, &mut lcp, &ranges, &shorter_than_k, &keep_suffix, &keep_letter);
-    output_file.write_all(&sets);
+
+    // let sets = build_sets(&bwt, &mut lcp, &ranges, &shorter_than_k, &keep_suffix, &keep_letter);
+    // output_file.write_all(&sets);
 
     Ok(())
 }
 
-fn calculate_ranges(lcp: &mut Lcp, k: usize, separator_count: usize) -> BitVector {
-    lcp.reset();
-    let len = lcp.len();
-    let mut ranges = RawVector::with_len(len, false);
-    ranges.set_bit(0, true);
-
-    // Skip the region of the F array which contains the '$' symbols.
-    Lcp::skip(lcp, separator_count);
-    let mut index = separator_count;
-
+fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVector, RawVector, BitVector, RawVector) {
     // The prefix of a suffix up to the first '$' will be referred to as the true prefix and
     // its length as the true length.
     //
@@ -314,33 +333,13 @@ fn calculate_ranges(lcp: &mut Lcp, k: usize, separator_count: usize) -> BitVecto
     // to as a small region. A (k-1)-region which contains suffixes with true length equal to k
     // will be referred to as a big region.
     //
-    // A big region can be further divided into k-regions. The LCP array will "lie" about the
-    // true length of the suffix. For example, the second from the following two will have an
-    // LCP value of at least 3:
-    //
-    // A$A...
-    // A$A...
-    //
+    // A big region can be further divided into k-regions.
 
-    let mut target_value = 0;
-    let max_step = k - 2;
-    #[allow(clippy::explicit_counter_loop)]
-    for value in lcp {
-        if value <= target_value {
-            ranges.set_bit(index, true);
-            target_value = (value + 1).min(max_step);
-        }
-        index += 1;
-    }
-    let mut ranges = BitVector::from(ranges);
-    ranges.enable_pred_succ();
-    ranges
-}
-
-fn calculate_length_marker_bitvectors(bwt: &Bwt, k: usize) -> (BitVector, RawVector) {
     let len = bwt.len();
     let mut shorter_than_k = RawVector::with_len(len, false);
     let mut equal_to_k     = RawVector::with_len(len, false);
+    let mut regions        = RawVector::with_len(len, false);
+    let mut k_regions      = RawVector::with_len(len, false);
     let mut order = 0;
     let mut current_length = 0;
     for _ in 0..len {
@@ -348,8 +347,14 @@ fn calculate_length_marker_bitvectors(bwt: &Bwt, k: usize) -> (BitVector, RawVec
         order = next_order;
         if character == b'$' {
             current_length = 0;
-        } else {
+        } else if current_length < k {
             current_length += 1;
+        }
+        if lcp.get(order) < current_length {
+            k_regions.set_bit(order, true);
+            if current_length < k {
+                regions.set_bit(order, true);
+            }
         }
         if current_length < k {
             shorter_than_k.set_bit(order, true);
@@ -357,46 +362,42 @@ fn calculate_length_marker_bitvectors(bwt: &Bwt, k: usize) -> (BitVector, RawVec
             equal_to_k.set_bit(order, true);
         }
     }
+
+    regions.set_bit(0, true);
+    k_regions.set_bit(0, true);
+
     let mut shorter_than_k = BitVector::from(shorter_than_k);
     shorter_than_k.enable_rank();
-    (shorter_than_k, equal_to_k)
+    let mut regions = BitVector::from(regions);
+    regions.enable_pred_succ();
+    (shorter_than_k, equal_to_k, regions, k_regions)
 }
 
 fn calculate_dummy_marks(
     bwt: &Bwt,
-    lcp: &mut Lcp,
     k: usize,
-    ranges: &BitVector,
+    regions: &BitVector,
+    k_regions: &RawVector,
     shorter_than_k: &BitVector,
     equal_to_k: &RawVector,
 ) -> (RawVector, RawVector) {
-    lcp.reset();
     let len = bwt.len();
     let mut keep_suffix = RawVector::with_len(len, false);
     let mut keep_letter = RawVector::with_len(len, false);
 
-    // Skip the region of the F array which contains the '$' symbols.
-    let mut index = bwt.data[char_index(b'$')].count_ones();
-    Lcp::skip(lcp, index);
-
+    let mut start = bwt.data[char_index(b'$')].count_ones();
     let mut has_full_kmer_as_predecessor = false;
-    // We want to iterate through the k-ranges as well this time.
-    let mut target_value = 0;
-    let max_step = k - 1;
-    #[allow(clippy::explicit_counter_loop)]
-    for value in lcp {
-        if value <= target_value {
-            target_value = (value + 1).min(max_step);
+    for index in start..bwt.len() {
+        if k_regions.bit(index) {
             has_full_kmer_as_predecessor = false;
         }
 
         if equal_to_k.bit(index) {
             let predecessor = bwt.inverse_lf_step(index);
-
             // If we haven't found a full k-mer as a predecessor for this k-region, search for it.
             if !has_full_kmer_as_predecessor {
                 has_full_kmer_as_predecessor |= has_full_kmer_predecessor(
-                    predecessor, bwt, ranges, shorter_than_k
+                    predecessor, bwt, regions, shorter_than_k
                 );
                 println!("i: {}; {}", index, has_full_kmer_as_predecessor);
             }
@@ -413,8 +414,6 @@ fn calculate_dummy_marks(
             // that this k-region has a predecessor.
             has_full_kmer_as_predecessor = true;
         }
-
-        index += 1;
     }
 
     (keep_suffix, keep_letter)
@@ -423,16 +422,16 @@ fn calculate_dummy_marks(
 fn has_full_kmer_predecessor(
     predecessor: usize,
     bwt: &Bwt,
-    ranges: &BitVector, 
+    regions: &BitVector, 
     shorter_than_k: &BitVector
 ) -> bool {
     let range_start = predecessor;
-    let one_index = ranges.rank(range_start + 1);
-    let range_end = if one_index == ranges.count_ones() {
+    let one_index = regions.rank(range_start + 1);
+    let range_end = if one_index == regions.count_ones() {
         bwt.len()
     } else {
         // There is at least one 1 after the current position.
-        ranges.select(one_index).unwrap()
+        regions.select(one_index).unwrap()
     };
     let range_length = range_end - range_start;
     let number_of_prefixes_with_true_length_smaller_than_k =
@@ -450,42 +449,14 @@ fn keep_predecessors(mut predecessor: usize, bwt: &Bwt, mut k: usize, keep_suffi
 
 fn build_sets(
     bwt: &Bwt,
-    lcp: &mut Lcp,
-    ranges: &BitVector,
+    k_regions: &BitVector,
     shorter_than_k: &BitVector,
-    // equal_to_k: &RawVector,
     keep_suffix: &RawVector,
     keep_letter: &RawVector,
 ) -> Vec<u8> {
-    lcp.reset();
-
     let mut sets = Vec::<u8>::with_capacity(bwt.len());
 
-    let mut separator_count = bwt.data[char_index(b'$')].count_ones();
-    let mut current_set: u8 = 0;
-    {
-        // Separator symbol region.
-        for index in 0..separator_count {
-            if keep_suffix.bit(index) {
-                current_set |= (1 << bwt.get_char_index(index) as u8);
-            }
-        }
-        sets.push(current_set);
-    }
-
-    lcp.skip(separator_count);
-    let mut emit_set = false;
-    current_set = 0;
-
-    // for (index, value) in lcp.enumerate() {
-    //     if value <= target_value {
-    //         target_value = (value + 1).min(max_step);
-    //         has_full_kmer_as_predecessor = false;
-    //     }
-    //
-    // }
-
-    todo!("Finish this...");
+    todo!();
 
     sets
 }

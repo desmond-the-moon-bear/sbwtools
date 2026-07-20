@@ -36,6 +36,7 @@ void generate_from_file(int argc, char *argv[]) {
     }
 
     int status;
+    i64 err;
     char *input_file_path = argv[1];
     char *bwt_path = argv[2];
     char *lcp_path = argv[3];
@@ -61,10 +62,10 @@ void generate_from_file(int argc, char *argv[]) {
 
     int lcp_fd = open(lcp_path, O_RDWR | O_CREAT, 0644);
     if (lcp_fd < 0) handle_error("open lcp_path");
-    i64 lcp_len = len * sizeof(i64);
-    status = ftruncate(lcp_fd, lcp_len);
+    i64 lcp_buffer_len = len * sizeof(i64);
+    status = ftruncate(lcp_fd, lcp_buffer_len);
     if (status < 0) handle_error("ftruncate lcp_fd"); 
-    i64 *lcp = (i64 *)mmap(NULL, lcp_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
+    i64 *lcp = (i64 *)mmap(NULL, lcp_buffer_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
     if (lcp == NULL) handle_error("mmap lcp_fd");
     
     i64 freq[256];
@@ -85,32 +86,50 @@ void generate_from_file(int argc, char *argv[]) {
 
     u8 *shifted_string = string + 1;
     i64 *sa = arralloc(i64, len);
-    i64 err = libsais64(shifted_string, sa, len, 0, NULL);
+    err = libsais64(shifted_string, sa, len, 0, NULL);
     if (err < 0) {
         printf("sa error\n");
         free(sa);
         munmap(string, total_length);
-        munmap(lcp, lcp_len);
+        munmap(lcp, lcp_buffer_len);
         return;
     }
 
     i64 *plcp = arralloc(i64, total_length);
     err = libsais64_plcp(shifted_string, sa, plcp, len);
-    munmap(string, total_length);
     if (err < 0) {
         printf("plcp error\n");
         free(sa);
         free(plcp);
-        munmap(lcp, lcp_len);
+        munmap(string, total_length);
+        munmap(lcp, lcp_buffer_len);
         return;
     }
 
     err = libsais64_lcp(plcp, sa, lcp, len);
+    {
+        for (int i = 0; i < len; ++i) {
+            i64 it = sa[i];
+            printf("%4ld | ", lcp[i]);
+            for (int j = 0; j < 3; ++j) {
+                if (shifted_string[it] == 0) {
+                    printf("0");
+                } else {
+                    printf("%c", shifted_string[it]);
+                }
+                ++it;
+                it %= len;
+            }
+            printf("\n");
+        }
+    }
     free(sa);
     free(plcp);
-    munmap(lcp, lcp_len);
+    munmap(string, total_length);
+    munmap(lcp, lcp_buffer_len);
     if (err < 0) {
         printf("lcp error\n");
     }
+
 }
 

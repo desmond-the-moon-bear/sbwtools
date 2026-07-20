@@ -11,11 +11,12 @@ pub const INDEX_TO_CHAR: [u8; 5] = [b'$', b'A', b'C', b'G', b'T'];
 
 const fn make_char_to_index_table() -> [usize; TABLE_SIZE] {
     let mut table = [u8::MAX as usize; TABLE_SIZE];
-    table[b'$' as usize] = 0; 
-    table[b'A' as usize] = 1; 
-    table[b'C' as usize] = 2; 
-    table[b'G' as usize] = 3; 
-    table[b'T' as usize] = 4; 
+    table[b'\0' as usize] = 0; 
+    table[ b'$' as usize] = 0; 
+    table[ b'A' as usize] = 1; 
+    table[ b'C' as usize] = 2; 
+    table[ b'G' as usize] = 3; 
+    table[ b'T' as usize] = 4; 
     table
 }
 
@@ -122,6 +123,30 @@ impl Lcp {
             width: size_of::<E>(),
             offset: 0,
         }
+    }
+
+    #[inline]
+    pub fn get(&mut self, index: usize) -> usize {
+        let start = index * self.width;
+        let end = start + self.width;
+        if end >= self.data.len() {
+            return 0;
+        }
+        let mut bytes: [u8; size_of::<usize>()] = [0_u8; size_of::<usize>()];
+        let src = &self.data[start..end];
+        bytes[0..self.width].copy_from_slice(src);
+        usize::from_le_bytes(bytes)
+    }
+
+    #[inline]
+    pub fn set(&mut self, index: usize, value: usize) {
+        let start = index * self.width;
+        let end = start + self.width;
+        if end >= self.data.len() {
+            return;
+        }
+        let bytes = &value.to_le_bytes()[0..self.width];
+        self.data[start..end].copy_from_slice(bytes);
     }
 
     #[inline]
