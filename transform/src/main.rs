@@ -102,6 +102,27 @@ enum Commands {
         /// The path to the output. Defaults to "./result.bsbwt".
         #[arg(short = 'o')]
         output_path: Option<PathBuf>,
+    },
+    /// Convert the sets from a sequence of bytes to a serialized SubsetMatrix variant of the SBWT.
+    #[command(name = "re")]
+    Reserialize {
+        /// Path to a ".bsbwt" file.
+        #[arg(short = 'i')]
+        bsbwt_path: PathBuf,
+
+        /// The path to the output. Defaults to "./result.sbwt".
+        #[arg(short = 'o')]
+        output_path: Option<PathBuf>,
+    },
+    /// Verify that the sets constructed from the LCP array and the BWT contain the same
+    /// information as an already generated SBWT data structure.
+    #[command(name = "verify")]
+    Verify {
+        #[arg(short = 's')]
+        sbwt_path: PathBuf, 
+
+        #[arg(long = "bsbwt")]
+        bsbwt_path: PathBuf,
     }
 }
 
@@ -116,6 +137,7 @@ enum Separator {
 }
 
 fn main() {
+    env_logger::init();
     let Cli { command } = Cli::parse();
     use Commands::*;
     match command {
@@ -153,6 +175,8 @@ fn main() {
         } => {
             build(bwtb_path, lcpt_path, output_path, k).unwrap()
         },
+        Reserialize { bsbwt_path, output_path } => {},
+        Verify { sbwt_path, bsbwt_path } => { verify(sbwt_path, bsbwt_path).unwrap() }
     };
 }
 
@@ -162,6 +186,7 @@ fn concatenate(
     output_path: Option<PathBuf>,
     separator: Separator,
 ) -> std::io::Result<()> {
+    log::info!("[concatenate] begin");
     let input_sequences = read_lines(&file_list_path)?;
     if let Some(dir) = directory_with_sequence_files {
         std::env::set_current_dir(dir)?;
@@ -178,6 +203,7 @@ fn concatenate(
         Dollar => { write_concatenation(sequence_reader, &mut output_writer, '$')?; },
         Null => { write_concatenation_gsa(sequence_reader, &mut output_writer)?; },
     }
+    log::info!("[concatenate] done");
     Ok(())
 }
 
@@ -205,6 +231,7 @@ fn truncate_lcp<const BIG_ENDIAN: bool>(
     output_path: Option<PathBuf>,
     max_k: u32,
 ) -> std::io::Result<()> {
+    log::info!("[truncate_lcp] begin");
     let input_file = File::open(input_path)?;
     let mut input_reader = BufReader::new(input_file);
 
@@ -229,6 +256,7 @@ fn truncate_lcp<const BIG_ENDIAN: bool>(
         let result_bytes = &truncated_number.to_le_bytes()[..output_byte_count];
         output_writer.write_all(result_bytes)?;
     }
+    log::info!("[truncate_lcp] done");
     Ok(())
 }
 
@@ -236,6 +264,7 @@ fn bwt_bit_vectors(
     input_path: PathBuf,
     output_path: Option<PathBuf>,
 ) -> std::io::Result<()> {
+    log::info!("[tbwt_bit_vectors] begin");
     assert_eq!(usize::BITS, u64::BITS, "Use a 64-bit machine pretty please.");
     let input_file = File::open(input_path)?;
     let metadata = input_file.metadata()?;
@@ -274,15 +303,16 @@ fn bwt_bit_vectors(
     for bit_vector in bit_vectors {
         bit_vector.serialize(&mut output_writer)?;
     }
+    log::info!("[tbwt_bit_vectors] done");
     Ok(())
 }
 
 fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k: u32) -> std::io::Result<()> {
+    log::info!("[build] begin");
     let bwtb_file = File::open(bwtb_path)?;
     let mut lcpt_file = File::open(lcpt_path)?;
 
     let mut bwtb_reader = BufReader::new(bwtb_file);
-    let bwt = Bwt::load(&mut bwtb_reader)?;
 
     let output_path = match output_path {
         Some(value) => value,
@@ -290,6 +320,10 @@ fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k
     };
     let mut output_file = File::create(output_path)?;
 
+    log::info!("[build] loading bwt");
+    let bwt = Bwt::load(&mut bwtb_reader)?;
+
+    log::info!("[build] loading lcpt");
     let lcpt_metadata = lcpt_file.metadata()?;
     let mut lcp_data: Vec<u8> = Vec::with_capacity(lcpt_metadata.len() as usize);
     lcpt_file.read_to_end(&mut lcp_data)?;
@@ -307,17 +341,17 @@ fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k
     let k = k as usize;
 
     let (shorter_than_k, equal_to_k, regions, k_regions) = calculate_auxiliary_bitvectors(&bwt, &mut lcp, k);
+    let width = lcp.width();
     drop(lcp);
 
     let (keep_suffix, keep_letter) = calculate_dummy_marks(
         &bwt, k, &regions, &k_regions, &shorter_than_k, &equal_to_k
     );
-    drop(regions);
     drop(equal_to_k);
 
-    // let sets = build_sets(&bwt, &mut lcp, &ranges, &shorter_than_k, &keep_suffix, &keep_letter);
-    // output_file.write_all(&sets);
-
+    let sets = build_sets(&bwt, width, &regions, &k_regions, &shorter_than_k, &keep_suffix, &keep_letter);
+    output_file.write_all(&sets);
+    log::info!("[build] done");
     Ok(())
 }
 
@@ -335,6 +369,7 @@ fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVec
     //
     // A big region can be further divided into k-regions.
 
+    log::info!("[calculate_auxiliary_bitvectors] begin");
     let len = bwt.len();
     let mut shorter_than_k = RawVector::with_len(len, false);
     let mut equal_to_k     = RawVector::with_len(len, false);
@@ -347,29 +382,35 @@ fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVec
         order = next_order;
         if character == b'$' {
             current_length = 0;
-        } else if current_length < k {
+        } else {
             current_length += 1;
-        }
-        if lcp.get(order) < current_length {
-            k_regions.set_bit(order, true);
             if current_length < k {
-                regions.set_bit(order, true);
+                shorter_than_k.set_bit(order, true);
+            } else if current_length == k {
+                equal_to_k.set_bit(order, true);
+            } else {
+                current_length = k;
             }
         }
-        if current_length < k {
-            shorter_than_k.set_bit(order, true);
-        } else if current_length == k {
-            equal_to_k.set_bit(order, true);
+        let lcp_value = lcp.get(order);
+        if lcp_value < current_length {
+            k_regions.set_bit(order, true);
+            if current_length < k || lcp_value < k - 1 {
+                regions.set_bit(order, true);
+            }
         }
     }
 
     regions.set_bit(0, true);
     k_regions.set_bit(0, true);
 
+    log::info!("[calculate_auxiliary_bitvectors] rank for shorter than k k-mers bitvector");
     let mut shorter_than_k = BitVector::from(shorter_than_k);
     shorter_than_k.enable_rank();
+    log::info!("[calculate_auxiliary_bitvectors] rank and select for regions bitvector");
     let mut regions = BitVector::from(regions);
-    regions.enable_pred_succ();
+    regions.enable_rank();
+    regions.enable_select();
     (shorter_than_k, equal_to_k, regions, k_regions)
 }
 
@@ -381,6 +422,7 @@ fn calculate_dummy_marks(
     shorter_than_k: &BitVector,
     equal_to_k: &RawVector,
 ) -> (RawVector, RawVector) {
+    log::info!("[calculate_dummy_marks] begin");
     let len = bwt.len();
     let mut keep_suffix = RawVector::with_len(len, false);
     let mut keep_letter = RawVector::with_len(len, false);
@@ -399,7 +441,6 @@ fn calculate_dummy_marks(
                 has_full_kmer_as_predecessor |= has_full_kmer_predecessor(
                     predecessor, bwt, regions, shorter_than_k
                 );
-                println!("i: {}; {}", index, has_full_kmer_as_predecessor);
             }
 
             if has_full_kmer_as_predecessor {
@@ -449,16 +490,169 @@ fn keep_predecessors(mut predecessor: usize, bwt: &Bwt, mut k: usize, keep_suffi
 
 fn build_sets(
     bwt: &Bwt,
-    k_regions: &BitVector,
+    width: usize,
+    regions: &BitVector,
+    k_regions: &RawVector,
     shorter_than_k: &BitVector,
     keep_suffix: &RawVector,
     keep_letter: &RawVector,
 ) -> Vec<u8> {
+    log::info!("[build_sets] begin");
+    const FULL_SET: u8 = 0b00001111;
+
     let mut sets = Vec::<u8>::with_capacity(bwt.len());
 
-    todo!();
+    let _ = width;
+    // todo(mk): construct the lcs array of the SBWT as well.
+    // let mut lcs_data = Vec::<u8>::with_capacity(bwt.len());
+    // let mut lcs = Lcp::new_with_width(lcs_data, width);
+
+    let mut current_set: u8 = 0;
+
+    let mut separator_count = bwt.data[char_index(b'$')].count_ones();
+
+    for index in 0..separator_count {
+        if keep_suffix.bit(index) {
+            current_set = include_letter(bwt, index, current_set);
+            if current_set == FULL_SET {
+                break;
+            }
+        }
+    }
+    sets.push(current_set);
+    log::info!("[build_sets] done with $ region");
+
+    current_set = 0;
+    let mut include_dummy_kmer = false;
+    let mut has_dummy_kmer     = false;
+    let mut k_region_count = 0;
+    for index in separator_count..bwt.len() {
+        if regions.get(index) {
+            if has_dummy_kmer && !include_dummy_kmer {
+                k_region_count -= 1;
+            }
+            while k_region_count > 0 {
+                sets.push(current_set);
+                current_set = 0;
+                k_region_count -= 1;
+            }
+
+            current_set = 0;
+            has_dummy_kmer = false;
+            include_dummy_kmer = false;
+            k_region_count = 0;
+        }
+
+        if k_regions.bit(index) {
+            k_region_count += 1;
+        }
+
+        if shorter_than_k.get(index) {
+            has_dummy_kmer = true;
+            if keep_suffix.bit(index) {
+                include_dummy_kmer = true;
+                current_set = include_letter(bwt, index, current_set);
+            }
+            if keep_letter.bit(index) {
+                current_set = include_letter(bwt, index, current_set);
+            }
+        } else {
+            current_set = include_letter(bwt, index, current_set);
+        }
+    }
+
+    if has_dummy_kmer && !include_dummy_kmer {
+        k_region_count -= 1;
+    }
+    while k_region_count > 0 {
+        sets.push(current_set);
+        current_set = 0;
+        k_region_count -= 1;
+    }
+    log::info!("[build_sets] done with other regions");
 
     sets
+}
+
+#[inline]
+fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
+    (1 << (bwt.get_char_index(index) - 1)) as u8 | current_set
+}
+
+fn reserialize(bsbwt_path: PathBuf, output_path: Option<PathBuf>) -> std::io::Result<()> {
+    todo!("Needs more data structures.");
+
+    log::info!("[reserialize] begin");
+
+    let mut bsbwt_file = File::open(bsbwt_path)?;
+    let metadata = bsbwt_file.metadata()?;
+    let len = metadata.len() as usize;
+
+    let output_path = match output_path {
+        Some(value) => value,
+        None => PathBuf::from("./result.sbwt"),
+    };
+
+    let output_file = File::create(output_path)?;
+    let mut output_writer = BufWriter::new(output_file);
+
+    let mut sets = Vec::<u8>::with_capacity(len);
+    bsbwt_file.read_to_end(&mut sets);
+
+    let mut raw_vectors = [
+        RawVector::with_len(len, false), // A
+        RawVector::with_len(len, false), // C
+        RawVector::with_len(len, false), // G
+        RawVector::with_len(len, false), // T
+    ];
+
+    for (set_index, set) in sets.into_iter().enumerate() {
+        for (row_index, row) in raw_vectors.iter_mut().enumerate() {
+            if set & (1 << row_index) == 0 {
+                continue;
+            }
+            row.set_bit(set_index, true);
+        }
+    }
+
+    const VARIANT_STRING: &[u8] = b"SubsetMatrix";
+    output_writer.write_all(&(VARIANT_STRING.len() as u64).to_le_bytes())?;
+    output_writer.write_all(VARIANT_STRING);
+
+    log::info!("[reserialize] done");
+    Ok(())
+}
+
+fn verify(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let sbwt_file = File::open(sbwt_path)?;
+    let mut sbwt_reader = BufReader::new(sbwt_file);
+
+    let bsbwt_file = File::open(bsbwt_path)?;
+    let bsbwt_metadata = bsbwt_file.metadata()?;
+    let bsbwt_len = bsbwt_metadata.len() as usize;
+    let mut bsbwt = Vec::<u8>::with_capacity(bsbwt_len);
+    
+    let sbwt::SbwtIndexVariant::SubsetMatrix(matrix) = sbwt::load_sbwt_index_variant(&mut sbwt_reader)?;
+    if matrix.n_sets() != bsbwt_len {
+        log::info!("FAIL: lengths differ; stopping verification");
+        return Ok(());
+    }
+
+    use sbwt::SubsetSeq;
+    for (set_index, set) in bsbwt.into_iter().enumerate() {
+        for i in 0..4 {
+            let should_contain_character = matrix.sbwt.set_contains(set_index, i);
+            let set_contains_character = (set & (1 << i)) != 0;
+            if should_contain_character != set_contains_character {
+                log::info!("FAIL: set {} does not match", set_index);
+                return Ok(());
+            }
+        }
+    }
+
+    log::info!("OK");
+
+    Ok(())
 }
 
 //

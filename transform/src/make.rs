@@ -1,8 +1,6 @@
 
 use std::ops::IndexMut;
 
-use simple_sds_sbwt::ops::BitVec;
-
 use super::*;
 
 pub const TABLE_SIZE: usize = u8::MAX as usize + 1;
@@ -125,6 +123,24 @@ impl Lcp {
         }
     }
 
+    pub fn new_with_width(data: Vec<u8>, width: usize) -> Self {
+        assert!(data.len().is_multiple_of(width));
+        let len = data.len() / width;
+        Self {
+            data,
+            len,
+            width,
+            offset: 0
+        }
+    }
+
+    #[inline]
+    pub fn push(&mut self, value: usize) {
+        self.len += 1;
+        let bytes = &value.to_le_bytes()[..self.width];
+        self.data.extend_from_slice(bytes);
+    }
+
     #[inline]
     pub fn get(&mut self, index: usize) -> usize {
         let start = index * self.width;
@@ -157,6 +173,11 @@ impl Lcp {
     #[inline]
     pub fn reset(&mut self) {
         self.offset = 0;
+    }
+
+    #[inline]
+    pub fn width(&self) -> usize {
+        self.width
     }
 
     #[inline]

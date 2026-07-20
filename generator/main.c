@@ -3,8 +3,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "libsais64.h"
@@ -22,6 +24,7 @@ typedef int64_t i64;
 #define handle_error(msg) \
     do { perror((msg)); exit(EXIT_FAILURE); } while (0)
 
+void timestamp(const char* message);
 void generate_from_file(int argc, char *argv[]);
 
 int main(int argc, char *argv[]) {
@@ -34,6 +37,8 @@ void generate_from_file(int argc, char *argv[]) {
         fprintf(stderr, "program <INPUT_PATH> <BWT_OUTPUT_PATH> <LCP_OUTPUT_PATH>\n");
         return;
     }
+
+    timestamp("[generate_from_file] begin");
 
     int status;
     i64 err;
@@ -71,6 +76,7 @@ void generate_from_file(int argc, char *argv[]) {
     i64 freq[256];
 
     // Use the lcp file mapped memory for the temporary array.
+    timestamp("[generate_from_file] bwt");
     i64 primary = libsais64_bwt(string, bwt, lcp, len, 0, freq);
     if (primary < 0) {
         printf("bwt error\n");
@@ -84,46 +90,29 @@ void generate_from_file(int argc, char *argv[]) {
     }
     munmap(bwt, len);
 
+    timestamp("[generate_from_file] suffix array");
     u8 *shifted_string = string + 1;
-    i64 *sa = arralloc(i64, len);
-    err = libsais64(shifted_string, sa, len, 0, NULL);
+    err = libsais64(shifted_string, lcp, len, 0, NULL);
     if (err < 0) {
         printf("sa error\n");
-        free(sa);
         munmap(string, total_length);
         munmap(lcp, lcp_buffer_len);
         return;
     }
 
+    timestamp("[generate_from_file] plcp");
     i64 *plcp = arralloc(i64, total_length);
-    err = libsais64_plcp(shifted_string, sa, plcp, len);
+    err = libsais64_plcp(shifted_string, lcp, plcp, len);
     if (err < 0) {
         printf("plcp error\n");
-        free(sa);
         free(plcp);
         munmap(string, total_length);
         munmap(lcp, lcp_buffer_len);
         return;
     }
 
-    err = libsais64_lcp(plcp, sa, lcp, len);
-    {
-        for (int i = 0; i < len; ++i) {
-            i64 it = sa[i];
-            printf("%4ld | ", lcp[i]);
-            for (int j = 0; j < 3; ++j) {
-                if (shifted_string[it] == 0) {
-                    printf("0");
-                } else {
-                    printf("%c", shifted_string[it]);
-                }
-                ++it;
-                it %= len;
-            }
-            printf("\n");
-        }
-    }
-    free(sa);
+    timestamp("[generate_from_file] lcp");
+    err = libsais64_lcp(plcp, lcp, lcp, len);
     free(plcp);
     munmap(string, total_length);
     munmap(lcp, lcp_buffer_len);
@@ -131,5 +120,16 @@ void generate_from_file(int argc, char *argv[]) {
         printf("lcp error\n");
     }
 
+    timestamp("[generate_from_file] done");
+}
+
+void timestamp(const char* message) {
+    time_t raw_time;
+    struct tm *time_info;
+    time(&raw_time);
+    time_info = localtime(&raw_time);
+    char *time_string = asctime(time_info);
+    int len = strlen(time_string);
+    printf("[%.*s] %s\n", len-1, time_string, message);
 }
 
