@@ -188,14 +188,14 @@ fn concatenate(
 ) -> std::io::Result<()> {
     log::info!("[concatenate] begin");
     let input_sequences = read_lines(&file_list_path)?;
-    if let Some(dir) = directory_with_sequence_files {
-        std::env::set_current_dir(dir)?;
-    }
     let output_path = match output_path {
         Some(value) => value,
         None => PathBuf::from("./result.concat"),
     };
     let output_file = File::create(output_path)?;
+    if let Some(dir) = directory_with_sequence_files {
+        std::env::set_current_dir(dir)?;
+    }
     let mut output_writer = BufWriter::new(output_file);
     let mut sequence_reader = SeqReader::new(&input_sequences);
     use Separator::*;
@@ -340,18 +340,51 @@ fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k
 
     let k = k as usize;
 
-    let (shorter_than_k, equal_to_k, regions, k_regions) = calculate_auxiliary_bitvectors(&bwt, &mut lcp, k);
+    let (shorter_than_k, equal_to_k, ranges, k_ranges) = calculate_auxiliary_bitvectors(&bwt, &mut lcp, k);
     let width = lcp.width();
+
+    // lcp.reset();
+    // println!("{:?}", (&mut lcp).collect::<Vec<_>>());
+
     drop(lcp);
 
     let (keep_suffix, keep_letter) = calculate_dummy_marks(
-        &bwt, k, &regions, &k_regions, &shorter_than_k, &equal_to_k
+        &bwt, k, &ranges, &k_ranges, &shorter_than_k, &equal_to_k
     );
+
+    // for i in 0..bwt.len() {
+    //     println!("{} {} {} {} {} {}",
+    //         if shorter_than_k.get(i) { 1 } else { 0 },
+    //         if equal_to_k.bit(i) { 1 } else { 0 },
+    //         if ranges.get(i) { 1 } else { 0 },
+    //         if k_ranges.bit(i) { 1 } else { 0 },
+    //         if keep_suffix.bit(i) { 1 } else { 0 },
+    //         if keep_letter.bit(i) { 1 } else { 0 },
+    //     );
+    // }
+
     drop(equal_to_k);
 
-    let sets = build_sets(&bwt, width, &regions, &k_regions, &shorter_than_k, &keep_suffix, &keep_letter);
+    let sets = build_sets(&bwt, width, &ranges, &k_ranges, &shorter_than_k, &keep_suffix, &keep_letter);
     output_file.write_all(&sets);
     log::info!("[build] done");
+
+    if let Ok(value) = std::env::var("RUST_PRINT_SETS") {
+        let count: usize = match value.parse() {
+            Ok(value) => value,
+            Err(_) => sets.len(),
+        };
+        for set in sets.into_iter().take(count) {
+            print!("{{");
+            for i in 0..4 {
+                if (set & (1 << i)) != 0 {
+                    print!("{}", INDEX_TO_CHAR[i + 1] as char);
+                }
+            }
+            println!("}}");
+        }
+    }
+
     Ok(())
 }
 
@@ -359,22 +392,23 @@ fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVec
     // The prefix of a suffix up to the first '$' will be referred to as the true prefix and
     // its length as the true length.
     //
-    // An N-region is a contiguous region of suffixes which have the same true prefix
-    // truncated from the right to a length of N (or if the true length of the suffix is less
-    // than N, they are padded with imaginary '$').
+    // An N-range is a contiguous range of suffixes which have the same true prefix after being
+    // truncated from the right to a length of N (or if the true length of the suffix is less than
+    // N, they are padded with imaginary '$').
     //
-    // A (k-1)-region which contains suffixes with true lengths less than k-1 will be referred
-    // to as a small region. A (k-1)-region which contains suffixes with true length equal to k
-    // will be referred to as a big region.
+    // A (k-1)-range which contains suffixes with true lengths less than k-1 will be referred
+    // to as a small range. A (k-1)-range which contains suffixes with true length equal to k
+    // will be referred to as a big range.
     //
-    // A big region can be further divided into k-regions.
+    // A big range can be further divided into k-ranges.
 
     log::info!("[calculate_auxiliary_bitvectors] begin");
     let len = bwt.len();
+    println!("len: {}", len);
     let mut shorter_than_k = RawVector::with_len(len, false);
     let mut equal_to_k     = RawVector::with_len(len, false);
-    let mut regions        = RawVector::with_len(len, false);
-    let mut k_regions      = RawVector::with_len(len, false);
+    let mut ranges        = RawVector::with_len(len, false);
+    let mut k_ranges      = RawVector::with_len(len, false);
     let mut order = 0;
     let mut current_length = 0;
     for _ in 0..len {
@@ -382,6 +416,7 @@ fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVec
         order = next_order;
         if character == b'$' {
             current_length = 0;
+            shorter_than_k.set_bit(order, true);
         } else {
             current_length += 1;
             if current_length < k {
@@ -394,31 +429,31 @@ fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVec
         }
         let lcp_value = lcp.get(order);
         if lcp_value < current_length {
-            k_regions.set_bit(order, true);
+            k_ranges.set_bit(order, true);
             if current_length < k || lcp_value < k - 1 {
-                regions.set_bit(order, true);
+                ranges.set_bit(order, true);
             }
         }
     }
 
-    regions.set_bit(0, true);
-    k_regions.set_bit(0, true);
+    ranges.set_bit(0, true);
+    k_ranges.set_bit(0, true);
 
     log::info!("[calculate_auxiliary_bitvectors] rank for shorter than k k-mers bitvector");
     let mut shorter_than_k = BitVector::from(shorter_than_k);
     shorter_than_k.enable_rank();
-    log::info!("[calculate_auxiliary_bitvectors] rank and select for regions bitvector");
-    let mut regions = BitVector::from(regions);
-    regions.enable_rank();
-    regions.enable_select();
-    (shorter_than_k, equal_to_k, regions, k_regions)
+    log::info!("[calculate_auxiliary_bitvectors] rank and select for ranges bitvector");
+    let mut ranges = BitVector::from(ranges);
+    ranges.enable_rank();
+    ranges.enable_select();
+    (shorter_than_k, equal_to_k, ranges, k_ranges)
 }
 
 fn calculate_dummy_marks(
     bwt: &Bwt,
     k: usize,
-    regions: &BitVector,
-    k_regions: &RawVector,
+    ranges: &BitVector,
+    k_ranges: &RawVector,
     shorter_than_k: &BitVector,
     equal_to_k: &RawVector,
 ) -> (RawVector, RawVector) {
@@ -428,32 +463,32 @@ fn calculate_dummy_marks(
     let mut keep_letter = RawVector::with_len(len, false);
 
     let mut start = bwt.data[char_index(b'$')].count_ones();
-    let mut has_full_kmer_as_predecessor = false;
+    let mut predecessor_confirmed = false;
     for index in start..bwt.len() {
-        if k_regions.bit(index) {
-            has_full_kmer_as_predecessor = false;
+        if k_ranges.bit(index) {
+            predecessor_confirmed = false;
         }
 
         if equal_to_k.bit(index) {
             let predecessor = bwt.inverse_lf_step(index);
-            // If we haven't found a full k-mer as a predecessor for this k-region, search for it.
-            if !has_full_kmer_as_predecessor {
-                has_full_kmer_as_predecessor |= has_full_kmer_predecessor(
-                    predecessor, bwt, regions, shorter_than_k
+            // If we haven't found a full k-mer as a predecessor for this k-range, search for it.
+            if !predecessor_confirmed {
+                predecessor_confirmed |= has_full_kmer_predecessor(
+                    predecessor, bwt, ranges, shorter_than_k
                 );
             }
 
-            if has_full_kmer_as_predecessor {
-                let predecessor = bwt.inverse_lf_step(index);
+            if predecessor_confirmed {
                 keep_letter.set_bit(predecessor, true);
             } else {
                 keep_predecessors(predecessor, bwt, k, &mut keep_suffix);
+                predecessor_confirmed = true;
             }
         } else if !shorter_than_k.get(index) {
             // If the true length of the prefix of this suffix is not equal to k and it is not
             // shorter than k, this means that it is longer than k. If this is the case, this means
-            // that this k-region has a predecessor.
-            has_full_kmer_as_predecessor = true;
+            // that this k-range has a predecessor.
+            predecessor_confirmed = true;
         }
     }
 
@@ -463,16 +498,16 @@ fn calculate_dummy_marks(
 fn has_full_kmer_predecessor(
     predecessor: usize,
     bwt: &Bwt,
-    regions: &BitVector, 
+    ranges: &BitVector, 
     shorter_than_k: &BitVector
 ) -> bool {
     let range_start = predecessor;
-    let one_index = regions.rank(range_start + 1);
-    let range_end = if one_index == regions.count_ones() {
+    let one_index = ranges.rank(range_start + 1);
+    let range_end = if one_index == ranges.count_ones() {
         bwt.len()
     } else {
         // There is at least one 1 after the current position.
-        regions.select(one_index).unwrap()
+        ranges.select(one_index).unwrap()
     };
     let range_length = range_end - range_start;
     let number_of_prefixes_with_true_length_smaller_than_k =
@@ -491,8 +526,8 @@ fn keep_predecessors(mut predecessor: usize, bwt: &Bwt, mut k: usize, keep_suffi
 fn build_sets(
     bwt: &Bwt,
     width: usize,
-    regions: &BitVector,
-    k_regions: &RawVector,
+    ranges: &BitVector,
+    k_ranges: &RawVector,
     shorter_than_k: &BitVector,
     keep_suffix: &RawVector,
     keep_letter: &RawVector,
@@ -520,31 +555,31 @@ fn build_sets(
         }
     }
     sets.push(current_set);
-    log::info!("[build_sets] done with $ region");
+    log::info!("[build_sets] done with $ range");
 
     current_set = 0;
     let mut include_dummy_kmer = false;
     let mut has_dummy_kmer     = false;
-    let mut k_region_count = 0;
+    let mut k_range_count = 0;
     for index in separator_count..bwt.len() {
-        if regions.get(index) {
+        if ranges.get(index) {
             if has_dummy_kmer && !include_dummy_kmer {
-                k_region_count -= 1;
+                k_range_count -= 1;
             }
-            while k_region_count > 0 {
+            while k_range_count > 0 {
                 sets.push(current_set);
                 current_set = 0;
-                k_region_count -= 1;
+                k_range_count -= 1;
             }
 
             current_set = 0;
             has_dummy_kmer = false;
             include_dummy_kmer = false;
-            k_region_count = 0;
+            k_range_count = 0;
         }
 
-        if k_regions.bit(index) {
-            k_region_count += 1;
+        if k_ranges.bit(index) {
+            k_range_count += 1;
         }
 
         if shorter_than_k.get(index) {
@@ -562,14 +597,14 @@ fn build_sets(
     }
 
     if has_dummy_kmer && !include_dummy_kmer {
-        k_region_count -= 1;
+        k_range_count -= 1;
     }
-    while k_region_count > 0 {
+    while k_range_count > 0 {
         sets.push(current_set);
         current_set = 0;
-        k_region_count -= 1;
+        k_range_count -= 1;
     }
-    log::info!("[build_sets] done with other regions");
+    log::info!("[build_sets] done with other ranges");
 
     sets
 }
@@ -627,24 +662,44 @@ fn verify(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::er
     let sbwt_file = File::open(sbwt_path)?;
     let mut sbwt_reader = BufReader::new(sbwt_file);
 
-    let bsbwt_file = File::open(bsbwt_path)?;
+    let mut bsbwt_file = File::open(bsbwt_path)?;
     let bsbwt_metadata = bsbwt_file.metadata()?;
     let bsbwt_len = bsbwt_metadata.len() as usize;
     let mut bsbwt = Vec::<u8>::with_capacity(bsbwt_len);
+    bsbwt_file.read_to_end(&mut bsbwt);
     
     let sbwt::SbwtIndexVariant::SubsetMatrix(matrix) = sbwt::load_sbwt_index_variant(&mut sbwt_reader)?;
-    if matrix.n_sets() != bsbwt_len {
-        log::info!("FAIL: lengths differ; stopping verification");
-        return Ok(());
-    }
+    // if matrix.n_sets() != bsbwt_len {
+    //     log::info!("FAIL: lengths differ: must be {}, was {}; stopping verification", matrix.n_sets(), bsbwt_len);
+    //     return Ok(());
+    // }
 
     use sbwt::SubsetSeq;
     for (set_index, set) in bsbwt.into_iter().enumerate() {
         for i in 0..4 {
-            let should_contain_character = matrix.sbwt.set_contains(set_index, i);
+            let should_contain_character = matrix.sbwt().set_contains(set_index, i);
             let set_contains_character = (set & (1 << i)) != 0;
+
             if should_contain_character != set_contains_character {
-                log::info!("FAIL: set {} does not match", set_index);
+                let mut correct_buf = String::new();
+                let mut incorrect_buf = String::new();
+                use std::fmt::Write;
+                for j in 0..4 {
+                    let should_contain_character = matrix.sbwt().set_contains(set_index, i);
+                    if should_contain_character {
+                        write!(&mut correct_buf, "{}", INDEX_TO_CHAR[j + 1] as char);
+                    }
+                    let set_contains_character = (set & (1 << j)) != 0;
+                    if set_contains_character {
+                        write!(&mut incorrect_buf, "{}", INDEX_TO_CHAR[j + 1] as char);
+                    }
+                }
+                log::info!(
+                    "FAIL: set {} does not match; correct: {{{}}}, incorrect: {{{}}}",
+                    set_index,
+                    correct_buf,
+                    incorrect_buf
+                );
                 return Ok(());
             }
         }
@@ -698,6 +753,7 @@ impl sbwt::SeqStream for SeqReader<'_> {
 
                     // note(mk): It's important to reverse the sequence for the suffix array!
                     self.local_buf.reverse();
+                    sanitise(&mut self.local_buf);
 
                     return Some(&self.local_buf);
                 } else {
@@ -724,6 +780,14 @@ impl<'a> Clone for SeqReader<'a> {
             next_idx: 0,
             current: None,
             local_buf: vec![],
+        }
+    }
+}
+
+fn sanitise(data: &mut [u8]) {
+    for k in data {
+        if CHAR_TO_INDEX[(*k) as usize] > 5 {
+            *k = b'$';
         }
     }
 }

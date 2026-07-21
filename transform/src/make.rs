@@ -145,7 +145,7 @@ impl Lcp {
     pub fn get(&mut self, index: usize) -> usize {
         let start = index * self.width;
         let end = start + self.width;
-        if end >= self.data.len() {
+        if end > self.data.len() {
             return 0;
         }
         let mut bytes: [u8; size_of::<usize>()] = [0_u8; size_of::<usize>()];
