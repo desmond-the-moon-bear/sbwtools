@@ -40,8 +40,7 @@ void generate_from_file(int argc, char *argv[]) {
 
     timestamp("[generate_from_file] begin");
 
-    int status;
-    i64 err;
+    i64 status;
     char *input_file_path = argv[1];
     char *bwt_path = argv[2];
     char *lcp_path = argv[3];
@@ -59,22 +58,28 @@ void generate_from_file(int argc, char *argv[]) {
     close(input_fd);
     if (string == MAP_FAILED) handle_error("mmap input_fd");
 
-    int bwt_fd = open(bwt_path, O_RDWR | O_CREAT, 0644);
+    // int bwt_fd = open(bwt_path, O_RDWR | O_CREAT , 0644);
+    int bwt_fd = open(bwt_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (bwt_fd < 0) handle_error("open bwt_path");
-    status = ftruncate(bwt_fd, len);
-    if (status < 0) handle_error("ftruncate bwt_fd"); 
-    u8 *bwt = (u8 *)mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, bwt_fd, 0);
-    close(bwt_fd);
-    if (bwt == MAP_FAILED) handle_error("mmap bwt_fd");
+    // status = ftruncate(bwt_fd, len);
+    // if (status < 0) handle_error("ftruncate bwt_fd"); 
+    // u8 *bwt = arralloc(u8, len); (u8 *)mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, bwt_fd, 0);
+    // close(bwt_fd);
+    // if (bwt == MAP_FAILED) handle_error("mmap bwt_fd");
+    u8 *bwt = arralloc(u8, len);
+    if (bwt == NULL) handle_error("malloc bwt");
 
-    int lcp_fd = open(lcp_path, O_RDWR | O_CREAT, 0644);
+    // int lcp_fd = open(lcp_path, O_RDWR | O_CREAT, 0644);
+    int lcp_fd = open(lcp_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (lcp_fd < 0) handle_error("open lcp_path");
     i64 lcp_buffer_len = len * sizeof(i64);
-    status = ftruncate(lcp_fd, lcp_buffer_len);
-    if (status < 0) handle_error("ftruncate lcp_fd"); 
-    i64 *lcp = (i64 *)mmap(NULL, lcp_buffer_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
-    close(lcp_fd);
-    if (lcp == MAP_FAILED) handle_error("mmap lcp_fd");
+    // status = ftruncate(lcp_fd, lcp_buffer_len);
+    // if (status < 0) handle_error("ftruncate lcp_fd"); 
+    // i64 *lcp = (i64 *)mmap(NULL, lcp_buffer_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
+    // close(lcp_fd);
+    // if (lcp == MAP_FAILED) handle_error("mmap lcp_fd");
+    i64 *lcp = arralloc(i64, len);
+    if (lcp == NULL) handle_error("malloc lcp");
     
     i64 freq[256];
 
@@ -84,42 +89,59 @@ void generate_from_file(int argc, char *argv[]) {
     if (primary < 0) {
         printf("bwt error\n");
     }
-    printf("bwt primary: [%ld]\n", primary);
 
+    printf("bwt primary: [%ld]\n", primary);
     u8 chars[] = {'$', 'A', 'C', 'G', 'T'};
     printf("(%2d) 0: %ld\n", 0, freq[0]);
     for (int i = 0; i < 5; ++i) {
         printf("(%2d) %c: %ld\n", chars[i], chars[i], freq[chars[i]]);
     }
-    munmap(bwt, len);
+
+    // munmap(bwt, len);
+    status = write(bwt_fd, bwt, len);
+    free(bwt);
+    if (status < 0) handle_error("write bwt");
+    if (close(bwt_fd) < 0) handle_error("close lcp_fd");
+
 
     timestamp("[generate_from_file] suffix array");
     u8 *shifted_string = string + 1;
-    err = libsais64(shifted_string, lcp, len, 0, NULL);
-    if (err < 0) {
+    status = libsais64(shifted_string, lcp, len, 0, NULL);
+    if (status < 0) {
         printf("sa error\n");
         munmap(string, total_length);
-        munmap(lcp, lcp_buffer_len);
+        // munmap(lcp, lcp_buffer_len);
+        free(lcp);
         return;
     }
+
 
     timestamp("[generate_from_file] plcp");
     i64 *plcp = arralloc(i64, total_length);
-    err = libsais64_plcp(shifted_string, lcp, plcp, len);
-    if (err < 0) {
+    status = libsais64_plcp(shifted_string, lcp, plcp, len);
+    if (status < 0) {
         printf("plcp error\n");
         free(plcp);
         munmap(string, total_length);
-        munmap(lcp, lcp_buffer_len);
+        // munmap(lcp, lcp_buffer_len);
+        free(lcp);
         return;
     }
 
+
     timestamp("[generate_from_file] lcp");
-    err = libsais64_lcp(plcp, lcp, lcp, len);
+    status = libsais64_lcp(plcp, lcp, lcp, len);
+
     free(plcp);
     munmap(string, total_length);
-    munmap(lcp, lcp_buffer_len);
-    if (err < 0) {
+
+    // munmap(lcp, lcp_buffer_len);
+    status = write(lcp_fd, lcp, lcp_buffer_len);
+    free(lcp);
+    if (status < 0) handle_error("write lcp");
+    if (close(lcp_fd) < 0) handle_error("close lcp_fd");
+
+    if (status < 0) {
         printf("lcp error\n");
     }
 
@@ -134,5 +156,6 @@ void timestamp(const char* message) {
     char *time_string = asctime(time_info);
     int len = strlen(time_string);
     printf("[%.*s] %s\n", len-1, time_string, message);
+    fflush(stdout);
 }
 
