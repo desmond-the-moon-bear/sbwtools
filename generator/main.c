@@ -53,7 +53,8 @@ void generate_from_file(int argc, char *argv[]) {
     if (status < 0) handle_error("fstat");
 
     i64 total_length = file_information.st_size;
-    i64 len = total_length - 1;
+    // i64 len = total_length - 1;
+    i64 len = total_length;
     u8 *string = (u8 *)mmap(NULL, total_length, PROT_READ, MAP_PRIVATE, input_fd, 0);
     close(input_fd);
     if (string == MAP_FAILED) handle_error("mmap input_fd");
@@ -91,9 +92,8 @@ void generate_from_file(int argc, char *argv[]) {
     }
 
     printf("bwt primary: [%ld]\n", primary);
-    u8 chars[] = {'$', 'A', 'C', 'G', 'T'};
-    printf("(%2d) 0: %ld\n", 0, freq[0]);
-    for (int i = 0; i < 5; ++i) {
+    u8 chars[] = {'$', 'A', 'C', 'G', 'T', '#'};
+    for (int i = 0; i < 6; ++i) {
         printf("(%2d) %c: %ld\n", chars[i], chars[i], freq[chars[i]]);
     }
 
@@ -105,8 +105,7 @@ void generate_from_file(int argc, char *argv[]) {
 
 
     timestamp("[generate_from_file] suffix array");
-    u8 *shifted_string = string + 1;
-    status = libsais64(shifted_string, lcp, len, 0, NULL);
+    status = libsais64(string, lcp, len, 0, NULL);
     if (status < 0) {
         printf("sa error\n");
         munmap(string, total_length);
@@ -118,7 +117,7 @@ void generate_from_file(int argc, char *argv[]) {
 
     timestamp("[generate_from_file] plcp");
     i64 *plcp = arralloc(i64, total_length);
-    status = libsais64_plcp(shifted_string, lcp, plcp, len);
+    status = libsais64_plcp(string, lcp, plcp, len);
     if (status < 0) {
         printf("plcp error\n");
         free(plcp);

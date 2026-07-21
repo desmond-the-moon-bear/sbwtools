@@ -5,7 +5,8 @@ mod make;
 use clap::{Parser, Subcommand, ValueEnum};
 use sbwt::SeqStream;
 
-use simple_sds_sbwt::ops::{BitVec, PredSucc, Rank, Select};
+use simple_sds_sbwt::int_vector::IntVector;
+use simple_sds_sbwt::ops::{Access, BitVec, PredSucc, Push, Rank, Select, Vector};
 use simple_sds_sbwt::raw_vector::{RawVector, AccessRaw};
 use simple_sds_sbwt::bit_vector::BitVector;
 use simple_sds_sbwt::serialize::Serialize;
@@ -44,9 +45,6 @@ enum Commands {
         /// Output path for the concatenated input sequences. Defaults to "./result.concat".
         #[arg(short = 'o')]
         output_path: Option<PathBuf>,
-
-        #[arg(value_enum, short = 's', default_value_t=Separator::Dollar)]
-        separator: Separator,
     },
     /// Truncate numbers from LCP array.
     ///
@@ -100,40 +98,33 @@ enum Commands {
         k: u32,
 
         /// The path to the output. Defaults to "./result.bsbwt".
-        #[arg(short = 'o')]
-        output_path: Option<PathBuf>,
+        #[arg(long = "bsbwt-out")]
+        bsbwt_output_path: Option<PathBuf>,
+
+        /// The path to the output. Defaults to "./result.lcs".
+        #[arg(long = "lcs-out")]
+        lcs_output_path: Option<PathBuf>,
     },
     /// Convert the sets from a sequence of bytes to a serialized SubsetMatrix variant of the SBWT.
     #[command(name = "re")]
-    Reserialize {
-        /// Path to a ".bsbwt" file.
-        #[arg(short = 'i')]
-        bsbwt_path: PathBuf,
-
-        /// The path to the output. Defaults to "./result.sbwt".
-        #[arg(short = 'o')]
-        output_path: Option<PathBuf>,
-    },
     /// Verify that the sets constructed from the LCP array and the BWT contain the same
     /// information as an already generated SBWT data structure.
-    #[command(name = "verify")]
-    Verify {
+    #[command(name = "verify-sbwt")]
+    VerifySbwt {
         #[arg(short = 's')]
         sbwt_path: PathBuf, 
 
         #[arg(long = "bsbwt")]
         bsbwt_path: PathBuf,
-    }
-}
+    },
+    #[command(name = "verify-lcs")]
+    VerifyLcs {
+        #[arg()]
+        invariant: PathBuf, 
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-#[value()]
-enum Separator {
-    #[value()]
-    #[default]
-    Dollar,
-    #[value()]
-    Null,
+        #[arg()]
+        generated: PathBuf,
+    }
 }
 
 fn main() {
@@ -145,9 +136,8 @@ fn main() {
             file_list_path,
             directory_with_sequence_files,
             output_path,
-            separator,
         } => {
-            concatenate(file_list_path, directory_with_sequence_files, output_path, separator).unwrap();
+            concatenate(file_list_path, directory_with_sequence_files, output_path).unwrap();
         }
         TruncateLcp {
             input_path,
@@ -170,13 +160,14 @@ fn main() {
         Build {
             bwtb_path,
             lcpt_path,
-            output_path,
-            k
+            k,
+            bsbwt_output_path,
+            lcs_output_path,
         } => {
-            build(bwtb_path, lcpt_path, output_path, k).unwrap()
+            build(bwtb_path, lcpt_path, bsbwt_output_path, lcs_output_path, k).unwrap()
         },
-        Reserialize { bsbwt_path, output_path } => {},
-        Verify { sbwt_path, bsbwt_path } => { verify(sbwt_path, bsbwt_path).unwrap() }
+        VerifySbwt { sbwt_path, bsbwt_path } => { verify_sbwt(sbwt_path, bsbwt_path).unwrap() }
+        VerifyLcs { invariant, generated } => { verify_lcs(invariant, generated).unwrap() }
     };
 }
 
@@ -184,7 +175,6 @@ fn concatenate(
     file_list_path: PathBuf,
     directory_with_sequence_files: Option<PathBuf>,
     output_path: Option<PathBuf>,
-    separator: Separator,
 ) -> std::io::Result<()> {
     log::info!("[concatenate] begin");
     let input_sequences = read_lines(&file_list_path)?;
@@ -198,22 +188,18 @@ fn concatenate(
     }
     let mut output_writer = BufWriter::new(output_file);
     let mut sequence_reader = SeqReader::new(&input_sequences);
-    use Separator::*;
-    match separator {
-        Dollar => { write_concatenation(sequence_reader, &mut output_writer, '$')?; },
-        Null => { write_concatenation_gsa(sequence_reader, &mut output_writer)?; },
-    }
+    write_concatenation(sequence_reader, &mut output_writer)?;
     log::info!("[concatenate] done");
     Ok(())
 }
 
-pub fn write_concatenation<SS: SeqStream + Send, W: std::io::Write>(mut stream: SS, output: &mut W, separator: char) -> std::io::Result<()> {
-    write!(output, "{}", separator)?;
+pub fn write_concatenation<SS: SeqStream + Send, W: std::io::Write>(mut stream: SS, output: &mut W) -> std::io::Result<()> {
+    write!(output, "#")?;
     while let Some(sequence) = stream.stream_next() {
-        write!(output, "{}", separator)?;
+        write!(output, "$")?;
         output.write_all(sequence)?;
     }
-    write!(output, "{}", separator)?;
+    write!(output, "$")?;
     Ok(())
 }
 
@@ -290,7 +276,9 @@ fn bwt_bit_vectors(
     let mut index: usize = 0;
     while input_reader.read_exact(&mut byte).is_ok() {
         let char_index = char_index(byte[0]);
-        raw_vectors[char_index].set_bit(index, true);
+        if char_index < raw_vectors.len() {
+            raw_vectors[char_index].set_bit(index, true);
+        }
         index += 1;
     }
 
@@ -307,18 +295,24 @@ fn bwt_bit_vectors(
     Ok(())
 }
 
-fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k: u32) -> std::io::Result<()> {
+fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, bsbwt_output_path: Option<PathBuf>, lcs_output_path: Option<PathBuf>, k: u32) -> std::io::Result<()> {
     log::info!("[build] begin");
     let bwtb_file = File::open(bwtb_path)?;
     let mut lcpt_file = File::open(lcpt_path)?;
 
     let mut bwtb_reader = BufReader::new(bwtb_file);
 
-    let output_path = match output_path {
+    let bsbwt_output_path = match bsbwt_output_path {
         Some(value) => value,
         None => PathBuf::from("./result.bsbwt"),
     };
-    let mut output_file = File::create(output_path)?;
+    let mut bsbwt_output_file = File::create(bsbwt_output_path)?;
+    let lcs_output_path = match lcs_output_path {
+        Some(value) => value,
+        None => PathBuf::from("./result.lcs"),
+    };
+    let lcs_output_file = File::create(lcs_output_path)?;
+    let mut lcs_writer = BufWriter::new(lcs_output_file);
 
     log::info!("[build] loading bwt");
     let bwt = Bwt::load(&mut bwtb_reader)?;
@@ -343,38 +337,26 @@ fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k
     let (shorter_than_k, equal_to_k, ranges, k_ranges) = calculate_auxiliary_bitvectors(&bwt, &mut lcp, k);
     let width = lcp.width();
 
-    // lcp.reset();
-    // println!("{:?}", (&mut lcp).collect::<Vec<_>>());
-
-    drop(lcp);
-
     let (keep_suffix, keep_letter) = calculate_dummy_marks(
         &bwt, k, &ranges, &k_ranges, &shorter_than_k, &equal_to_k
     );
 
-    // for i in 0..bwt.len() {
-    //     println!("{} {} {} {} {} {}",
-    //         if shorter_than_k.get(i) { 1 } else { 0 },
-    //         if equal_to_k.bit(i) { 1 } else { 0 },
-    //         if ranges.get(i) { 1 } else { 0 },
-    //         if k_ranges.bit(i) { 1 } else { 0 },
-    //         if keep_suffix.bit(i) { 1 } else { 0 },
-    //         if keep_letter.bit(i) { 1 } else { 0 },
-    //     );
-    // }
-
     drop(equal_to_k);
 
-    let sets = build_sets(&bwt, width, &ranges, &k_ranges, &shorter_than_k, &keep_suffix, &keep_letter);
-    output_file.write_all(&sets);
+    let (sets, lcs) = build_sets_and_lcs(&bwt, &lcp, k, &ranges, &k_ranges, &shorter_than_k, &keep_suffix, &keep_letter);
+    log::info!("[build] writing bsbwt");
+    bsbwt_output_file.write_all(&sets)?;
+    log::info!("[build] serializing lcs");
+    lcs.serialize(&mut lcs_writer)?;
     log::info!("[build] done");
 
     if let Ok(value) = std::env::var("RUST_PRINT_SETS") {
-        let count: usize = match value.parse() {
-            Ok(value) => value,
-            Err(_) => sets.len(),
+        let count = match value.parse::<usize>() {
+            Ok(value) => value.min(sets.len()),
+            Err(_) => 16.min(sets.len()),
         };
-        for set in sets.into_iter().take(count) {
+
+        for (index, set) in sets.into_iter().take(count).enumerate() {
             print!("{{");
             for i in 0..4 {
                 if (set & (1 << i)) != 0 {
@@ -386,6 +368,14 @@ fn build(bwtb_path: PathBuf, lcpt_path: PathBuf, output_path: Option<PathBuf>, k
     }
 
     Ok(())
+}
+
+fn print_kmer(bwt: &Bwt, mut index: usize, k: usize) {
+    for _ in 0..k {
+        let (next, letter) = bwt.lf_step(index);
+        index = next;
+        print!("{}", letter as char);
+    }
 }
 
 fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVector, RawVector, BitVector, RawVector) {
@@ -404,14 +394,13 @@ fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVec
 
     log::info!("[calculate_auxiliary_bitvectors] begin");
     let len = bwt.len();
-    println!("len: {}", len);
     let mut shorter_than_k = RawVector::with_len(len, false);
     let mut equal_to_k     = RawVector::with_len(len, false);
-    let mut ranges        = RawVector::with_len(len, false);
-    let mut k_ranges      = RawVector::with_len(len, false);
-    let mut order = 0;
+    let mut ranges         = RawVector::with_len(len, false);
+    let mut k_ranges       = RawVector::with_len(len, false);
+    let mut order = 1;
     let mut current_length = 0;
-    for _ in 0..len {
+    for _ in 1..len {
         let (next_order, character) = bwt.lf_step(order);
         order = next_order;
         if character == b'$' {
@@ -436,8 +425,9 @@ fn calculate_auxiliary_bitvectors(bwt: &Bwt, lcp: &mut Lcp, k: usize) -> (BitVec
         }
     }
 
-    ranges.set_bit(0, true);
-    k_ranges.set_bit(0, true);
+    // Skip the '#' region at the beginning.
+    ranges.set_bit(1, true);
+    k_ranges.set_bit(1, true);
 
     log::info!("[calculate_auxiliary_bitvectors] rank for shorter than k k-mers bitvector");
     let mut shorter_than_k = BitVector::from(shorter_than_k);
@@ -462,7 +452,7 @@ fn calculate_dummy_marks(
     let mut keep_suffix = RawVector::with_len(len, false);
     let mut keep_letter = RawVector::with_len(len, false);
 
-    let mut start = bwt.data[char_index(b'$')].count_ones();
+    let mut start = bwt.counts[1];
     let mut predecessor_confirmed = false;
     for index in start..bwt.len() {
         if k_ranges.bit(index) {
@@ -523,30 +513,31 @@ fn keep_predecessors(mut predecessor: usize, bwt: &Bwt, mut k: usize, keep_suffi
     }
 }
 
-fn build_sets(
+#[allow(clippy::too_many_arguments)]
+fn build_sets_and_lcs(
     bwt: &Bwt,
-    width: usize,
+    lcp: &Lcp,
+    k: usize,
     ranges: &BitVector,
     k_ranges: &RawVector,
     shorter_than_k: &BitVector,
     keep_suffix: &RawVector,
     keep_letter: &RawVector,
-) -> Vec<u8> {
+) -> (Vec<u8>, IntVector) {
     log::info!("[build_sets] begin");
     const FULL_SET: u8 = 0b00001111;
 
     let mut sets = Vec::<u8>::with_capacity(bwt.len());
 
-    let _ = width;
-    // todo(mk): construct the lcs array of the SBWT as well.
-    // let mut lcs_data = Vec::<u8>::with_capacity(bwt.len());
-    // let mut lcs = Lcp::new_with_width(lcs_data, width);
+    let bit_width = (usize::BITS - k.leading_zeros()) as usize;
+    let mut lcs = IntVector::with_capacity(bwt.len(), bit_width).unwrap();
+
+    lcs.push(0); // '$...$' dummy k-mer
 
     let mut current_set: u8 = 0;
+    let mut separator_count = bwt.counts[1];
 
-    let mut separator_count = bwt.data[char_index(b'$')].count_ones();
-
-    for index in 0..separator_count {
+    for index in 1..separator_count {
         if keep_suffix.bit(index) {
             current_set = include_letter(bwt, index, current_set);
             if current_set == FULL_SET {
@@ -558,6 +549,7 @@ fn build_sets(
     log::info!("[build_sets] done with $ range");
 
     current_set = 0;
+    let mut current_lcs_value  = k - 1;
     let mut include_dummy_kmer = false;
     let mut has_dummy_kmer     = false;
     let mut k_range_count = 0;
@@ -578,13 +570,20 @@ fn build_sets(
             k_range_count = 0;
         }
 
-        if k_ranges.bit(index) {
+        current_lcs_value = current_lcs_value.min(lcp.get(index));
+
+        let is_start_of_k_range = k_ranges.bit(index);
+        if is_start_of_k_range {
             k_range_count += 1;
         }
 
         if shorter_than_k.get(index) {
             has_dummy_kmer = true;
             if keep_suffix.bit(index) {
+                if !include_dummy_kmer {
+                    lcs.push(current_lcs_value as u64);
+                    current_lcs_value = k - 1;
+                }
                 include_dummy_kmer = true;
                 current_set = include_letter(bwt, index, current_set);
             }
@@ -592,6 +591,10 @@ fn build_sets(
                 current_set = include_letter(bwt, index, current_set);
             }
         } else {
+            if is_start_of_k_range {
+                lcs.push(current_lcs_value as u64);
+                current_lcs_value = k - 1;
+            }
             current_set = include_letter(bwt, index, current_set);
         }
     }
@@ -606,7 +609,7 @@ fn build_sets(
     }
     log::info!("[build_sets] done with other ranges");
 
-    sets
+    (sets, lcs)
 }
 
 #[inline]
@@ -614,51 +617,7 @@ fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
     (1 << (bwt.get_char_index(index) - 1)) as u8 | current_set
 }
 
-fn reserialize(bsbwt_path: PathBuf, output_path: Option<PathBuf>) -> std::io::Result<()> {
-    todo!("Needs more data structures.");
-
-    log::info!("[reserialize] begin");
-
-    let mut bsbwt_file = File::open(bsbwt_path)?;
-    let metadata = bsbwt_file.metadata()?;
-    let len = metadata.len() as usize;
-
-    let output_path = match output_path {
-        Some(value) => value,
-        None => PathBuf::from("./result.sbwt"),
-    };
-
-    let output_file = File::create(output_path)?;
-    let mut output_writer = BufWriter::new(output_file);
-
-    let mut sets = Vec::<u8>::with_capacity(len);
-    bsbwt_file.read_to_end(&mut sets);
-
-    let mut raw_vectors = [
-        RawVector::with_len(len, false), // A
-        RawVector::with_len(len, false), // C
-        RawVector::with_len(len, false), // G
-        RawVector::with_len(len, false), // T
-    ];
-
-    for (set_index, set) in sets.into_iter().enumerate() {
-        for (row_index, row) in raw_vectors.iter_mut().enumerate() {
-            if set & (1 << row_index) == 0 {
-                continue;
-            }
-            row.set_bit(set_index, true);
-        }
-    }
-
-    const VARIANT_STRING: &[u8] = b"SubsetMatrix";
-    output_writer.write_all(&(VARIANT_STRING.len() as u64).to_le_bytes())?;
-    output_writer.write_all(VARIANT_STRING);
-
-    log::info!("[reserialize] done");
-    Ok(())
-}
-
-fn verify(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn verify_sbwt(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let sbwt_file = File::open(sbwt_path)?;
     let mut sbwt_reader = BufReader::new(sbwt_file);
 
@@ -668,11 +627,14 @@ fn verify(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::er
     let mut bsbwt = Vec::<u8>::with_capacity(bsbwt_len);
     bsbwt_file.read_to_end(&mut bsbwt);
     
-    let sbwt::SbwtIndexVariant::SubsetMatrix(matrix) = sbwt::load_sbwt_index_variant(&mut sbwt_reader)?;
-    // if matrix.n_sets() != bsbwt_len {
-    //     log::info!("FAIL: lengths differ: must be {}, was {}; stopping verification", matrix.n_sets(), bsbwt_len);
-    //     return Ok(());
-    // }
+    let sbwt::SbwtIndexVariant::SubsetMatrix(mut matrix) = sbwt::load_sbwt_index_variant(&mut sbwt_reader)?;
+    matrix.build_select();
+
+    if matrix.n_sets() != bsbwt_len {
+        log::info!("ERR: lengths differ: must be {}, was {}", matrix.n_sets(), bsbwt_len);
+    } else {
+        log::info!("OK: lengths are the same: {}", bsbwt_len);
+    }
 
     use sbwt::SubsetSeq;
     for (set_index, set) in bsbwt.into_iter().enumerate() {
@@ -684,6 +646,8 @@ fn verify(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::er
                 let mut correct_buf = String::new();
                 let mut incorrect_buf = String::new();
                 use std::fmt::Write;
+                let kmer = matrix.access_kmer(set_index);
+                let kmer = String::from_utf8_lossy(&kmer);
                 for j in 0..4 {
                     let should_contain_character = matrix.sbwt().set_contains(set_index, i);
                     if should_contain_character {
@@ -695,8 +659,9 @@ fn verify(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::er
                     }
                 }
                 log::info!(
-                    "FAIL: set {} does not match; correct: {{{}}}, incorrect: {{{}}}",
+                    "ERR: set {} [{}] does not match; correct: {{{}}}, incorrect: {{{}}}",
                     set_index,
+                    kmer,
                     correct_buf,
                     incorrect_buf
                 );
@@ -705,7 +670,36 @@ fn verify(sbwt_path: PathBuf, bsbwt_path: PathBuf) -> Result<(), Box<dyn std::er
         }
     }
 
-    log::info!("OK");
+    log::info!("OK: everything is the same");
+
+    Ok(())
+}
+
+fn verify_lcs(invariant: PathBuf, generated: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let invariant_file = File::open(invariant)?;
+    let mut invariant_reader = BufReader::new(invariant_file);
+
+    let generated_file = File::open(generated)?;
+    let mut generated_reader = BufReader::new(generated_file);
+    
+    let invariant = IntVector::load(&mut invariant_reader)?;
+    let generated = IntVector::load(&mut generated_reader)?;
+
+    if invariant.len() != generated.len() {
+        log::info!("ERR: lengths differ: must be {}, was {}", invariant.len(), generated.len());
+    } else {
+        log::info!("OK: lengths are the same: {}", invariant.len());
+    }
+
+    use sbwt::SubsetSeq;
+    for (index, (a, b)) in invariant.iter().zip(generated.iter()).enumerate() {
+        if a != b {
+            log::info!("ERR: elements at index {} differ: must be {}, was {}", index, a, b);
+            return Ok(());
+        }
+    }
+
+    log::info!("OK: everything is the same");
 
     Ok(())
 }

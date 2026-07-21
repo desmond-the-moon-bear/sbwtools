@@ -5,16 +5,16 @@ use super::*;
 
 pub const TABLE_SIZE: usize = u8::MAX as usize + 1;
 pub const CHAR_TO_INDEX: [usize; TABLE_SIZE] = make_char_to_index_table();
-pub const INDEX_TO_CHAR: [u8; 5] = [b'$', b'A', b'C', b'G', b'T'];
+pub const INDEX_TO_CHAR: &[u8] = b"$ACGT#";
 
 const fn make_char_to_index_table() -> [usize; TABLE_SIZE] {
     let mut table = [u8::MAX as usize; TABLE_SIZE];
-    table[b'\0' as usize] = 0; 
-    table[ b'$' as usize] = 0; 
-    table[ b'A' as usize] = 1; 
-    table[ b'C' as usize] = 2; 
-    table[ b'G' as usize] = 3; 
-    table[ b'T' as usize] = 4; 
+    table[b'$' as usize] = 0;
+    table[b'A' as usize] = 1;
+    table[b'C' as usize] = 2;
+    table[b'G' as usize] = 3;
+    table[b'T' as usize] = 4;
+    table[b'#' as usize] = 5;
     table
 }
 
@@ -31,6 +31,7 @@ pub struct Bwt {
 impl Bwt {
     pub fn new(data: [BitVector; 5]) -> Self {
         let mut counts = [0_usize; 5];
+        counts[0] = 1; // '#'
         for i in 1..5 {
             counts[i] = counts[i - 1] + data[i - 1].count_ones();
         }
@@ -48,7 +49,7 @@ impl Bwt {
                 return char_index;
             }
         }
-        unreachable!("The character at the index should have a corresponding bitvector in the BWT.");
+        INDEX_TO_CHAR.len() - 1
     }
 
     #[inline]
@@ -60,9 +61,13 @@ impl Bwt {
     #[inline]
     pub fn lf_step(&self, index: usize) -> (usize, u8) {
         let char_index = self.get_char_index(index);
-        let order = self.counts[char_index] + self.data[char_index].rank(index);
         let character = INDEX_TO_CHAR[char_index];
-        (order, character)
+        if char_index < self.counts.len() {
+            let order = self.counts[char_index] + self.data[char_index].rank(index);
+            (order, character)
+        } else {
+            (0, character)
+        }
     }
 
     #[inline]
@@ -142,7 +147,7 @@ impl Lcp {
     }
 
     #[inline]
-    pub fn get(&mut self, index: usize) -> usize {
+    pub fn get(&self, index: usize) -> usize {
         let start = index * self.width;
         let end = start + self.width;
         if end > self.data.len() {
