@@ -56,14 +56,16 @@ void generate_from_file(int argc, char *argv[]) {
     i64 total_length = file_information.st_size;
     i64 len = total_length - 1;
     u8 *string = (u8 *)mmap(NULL, total_length, PROT_READ, MAP_PRIVATE, input_fd, 0);
-    if (string == NULL) handle_error("mmap input_fd");
+    close(input_fd);
+    if (string == MAP_FAILED) handle_error("mmap input_fd");
 
     int bwt_fd = open(bwt_path, O_RDWR | O_CREAT, 0644);
     if (bwt_fd < 0) handle_error("open bwt_path");
     status = ftruncate(bwt_fd, len);
     if (status < 0) handle_error("ftruncate bwt_fd"); 
     u8 *bwt = (u8 *)mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, bwt_fd, 0);
-    if (bwt == NULL) handle_error("mmap bwt_fd");
+    close(bwt_fd);
+    if (bwt == MAP_FAILED) handle_error("mmap bwt_fd");
 
     int lcp_fd = open(lcp_path, O_RDWR | O_CREAT, 0644);
     if (lcp_fd < 0) handle_error("open lcp_path");
@@ -71,7 +73,8 @@ void generate_from_file(int argc, char *argv[]) {
     status = ftruncate(lcp_fd, lcp_buffer_len);
     if (status < 0) handle_error("ftruncate lcp_fd"); 
     i64 *lcp = (i64 *)mmap(NULL, lcp_buffer_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
-    if (lcp == NULL) handle_error("mmap lcp_fd");
+    close(lcp_fd);
+    if (lcp == MAP_FAILED) handle_error("mmap lcp_fd");
     
     i64 freq[256];
 
