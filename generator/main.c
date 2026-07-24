@@ -59,28 +59,28 @@ void generate_from_file(int argc, char *argv[]) {
     close(input_fd);
     if (string == MAP_FAILED) handle_error("mmap input_fd");
 
-    // int bwt_fd = open(bwt_path, O_RDWR | O_CREAT , 0644);
-    int bwt_fd = open(bwt_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int bwt_fd = open(bwt_path, O_RDWR | O_CREAT , 0644);
+    // int bwt_fd = open(bwt_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (bwt_fd < 0) handle_error("open bwt_path");
-    // status = ftruncate(bwt_fd, len);
-    // if (status < 0) handle_error("ftruncate bwt_fd"); 
-    // u8 *bwt = arralloc(u8, len); (u8 *)mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, bwt_fd, 0);
-    // close(bwt_fd);
-    // if (bwt == MAP_FAILED) handle_error("mmap bwt_fd");
-    u8 *bwt = arralloc(u8, len);
-    if (bwt == NULL) handle_error("malloc bwt");
+    status = ftruncate(bwt_fd, len);
+    if (status < 0) handle_error("ftruncate bwt_fd"); 
+    u8 *bwt = (u8 *)mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, bwt_fd, 0);
+    close(bwt_fd);
+    if (bwt == MAP_FAILED) handle_error("mmap bwt_fd");
+    // u8 *bwt = arralloc(u8, len);
+    // if (bwt == NULL) handle_error("malloc bwt");
 
-    // int lcp_fd = open(lcp_path, O_RDWR | O_CREAT, 0644);
-    int lcp_fd = open(lcp_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int lcp_fd = open(lcp_path, O_RDWR | O_CREAT, 0644);
+    // int lcp_fd = open(lcp_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (lcp_fd < 0) handle_error("open lcp_path");
     i64 lcp_buffer_len = len * sizeof(i64);
-    // status = ftruncate(lcp_fd, lcp_buffer_len);
-    // if (status < 0) handle_error("ftruncate lcp_fd"); 
-    // i64 *lcp = (i64 *)mmap(NULL, lcp_buffer_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
-    // close(lcp_fd);
-    // if (lcp == MAP_FAILED) handle_error("mmap lcp_fd");
-    i64 *lcp = arralloc(i64, len);
-    if (lcp == NULL) handle_error("malloc lcp");
+    status = ftruncate(lcp_fd, lcp_buffer_len);
+    if (status < 0) handle_error("ftruncate lcp_fd"); 
+    i64 *lcp = (i64 *)mmap(NULL, lcp_buffer_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
+    close(lcp_fd);
+    if (lcp == MAP_FAILED) handle_error("mmap lcp_fd");
+    // i64 *lcp = arralloc(i64, len);
+    // if (lcp == NULL) handle_error("malloc lcp");
     
     i64 freq[256];
 
@@ -97,11 +97,11 @@ void generate_from_file(int argc, char *argv[]) {
         printf("(%2d) %c: %ld\n", chars[i], chars[i], freq[chars[i]]);
     }
 
-    // munmap(bwt, len);
-    status = write(bwt_fd, bwt, len);
-    free(bwt);
-    if (status < 0) handle_error("write bwt");
-    if (close(bwt_fd) < 0) handle_error("close lcp_fd");
+    munmap(bwt, len);
+    // status = write(bwt_fd, bwt, len);
+    // free(bwt);
+    // if (status < 0) handle_error("write bwt");
+    // if (close(bwt_fd) < 0) handle_error("close lcp_fd");
 
 
     timestamp("[generate_from_file] suffix array");
@@ -109,8 +109,8 @@ void generate_from_file(int argc, char *argv[]) {
     if (status < 0) {
         printf("sa error\n");
         munmap(string, total_length);
-        // munmap(lcp, lcp_buffer_len);
-        free(lcp);
+        munmap(lcp, lcp_buffer_len);
+        // free(lcp);
         return;
     }
 
@@ -122,8 +122,8 @@ void generate_from_file(int argc, char *argv[]) {
         printf("plcp error\n");
         free(plcp);
         munmap(string, total_length);
-        // munmap(lcp, lcp_buffer_len);
-        free(lcp);
+        munmap(lcp, lcp_buffer_len);
+        // free(lcp);
         return;
     }
 
@@ -134,11 +134,11 @@ void generate_from_file(int argc, char *argv[]) {
     free(plcp);
     munmap(string, total_length);
 
-    // munmap(lcp, lcp_buffer_len);
-    status = write(lcp_fd, lcp, lcp_buffer_len);
-    free(lcp);
-    if (status < 0) handle_error("write lcp");
-    if (close(lcp_fd) < 0) handle_error("close lcp_fd");
+    munmap(lcp, lcp_buffer_len);
+    // status = write(lcp_fd, lcp, lcp_buffer_len);
+    // free(lcp);
+    // if (status < 0) handle_error("write lcp");
+    // if (close(lcp_fd) < 0) handle_error("close lcp_fd");
 
     if (status < 0) {
         printf("lcp error\n");
