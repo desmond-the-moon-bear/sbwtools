@@ -82,11 +82,11 @@ enum Commands {
     /// Construct SBWT out of a LCP array and a BWT of the concatenated input sequences.
     #[command(name = "build")]
     Build {
-        /// The path to the input BWT bitvectors.
+        /// The path to the input BWT.
         #[arg(short = 'b')]
         bwt_path: PathBuf,
 
-        /// The path to the input (truncated) LCP.
+        /// The path to the input LCP.
         #[arg(short = 'l')]
         lcp_path: PathBuf,
 
@@ -94,8 +94,8 @@ enum Commands {
         #[arg(short = 'k')]
         k: u32,
 
-        /// The path to the output sbwt. Defaults to "./result.bsbwt".
-        #[arg(long = "bsbwt-out")]
+        /// The path to the output sbwt. Defaults to "./result.sbwt".
+        #[arg(long = "sbwt-out")]
         sbwt_output_path: Option<PathBuf>,
 
         /// The path to the output lcs array of the sbwt. Defaults to "./result.lcs".
