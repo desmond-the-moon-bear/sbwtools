@@ -59,28 +59,16 @@ void generate_from_file(int argc, char *argv[]) {
     close(input_fd);
     if (string == MAP_FAILED) handle_error("mmap input_fd");
 
-    int bwt_fd = open(bwt_path, O_RDWR | O_CREAT , 0644);
-    // int bwt_fd = open(bwt_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int bwt_fd = open(bwt_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (bwt_fd < 0) handle_error("open bwt_path");
-    status = ftruncate(bwt_fd, len);
-    if (status < 0) handle_error("ftruncate bwt_fd"); 
-    u8 *bwt = (u8 *)mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, bwt_fd, 0);
-    close(bwt_fd);
-    if (bwt == MAP_FAILED) handle_error("mmap bwt_fd");
-    // u8 *bwt = arralloc(u8, len);
-    // if (bwt == NULL) handle_error("malloc bwt");
+    u8 *bwt = arralloc(u8, len);
+    if (bwt == NULL) handle_error("malloc bwt");
 
-    int lcp_fd = open(lcp_path, O_RDWR | O_CREAT, 0644);
-    // int lcp_fd = open(lcp_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int lcp_fd = open(lcp_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (lcp_fd < 0) handle_error("open lcp_path");
     i64 lcp_buffer_len = len * sizeof(i64);
-    status = ftruncate(lcp_fd, lcp_buffer_len);
-    if (status < 0) handle_error("ftruncate lcp_fd"); 
-    i64 *lcp = (i64 *)mmap(NULL, lcp_buffer_len, PROT_READ | PROT_WRITE, MAP_SHARED, lcp_fd, 0);
-    close(lcp_fd);
-    if (lcp == MAP_FAILED) handle_error("mmap lcp_fd");
-    // i64 *lcp = arralloc(i64, len);
-    // if (lcp == NULL) handle_error("malloc lcp");
+    i64 *lcp = arralloc(i64, len);
+    if (lcp == NULL) handle_error("malloc lcp");
     
     i64 freq[256];
 
@@ -97,23 +85,26 @@ void generate_from_file(int argc, char *argv[]) {
         printf("(%2d) %c: %ld\n", chars[i], chars[i], freq[chars[i]]);
     }
 
-    munmap(bwt, len);
-    // status = write(bwt_fd, bwt, len);
-    // free(bwt);
-    // if (status < 0) handle_error("write bwt");
-    // if (close(bwt_fd) < 0) handle_error("close lcp_fd");
-
+    i64 offset = 0;
+    while (offset < len) {
+        status = write(bwt_fd, bwt + offset, len - offset);
+        if (status <= 0) {
+            break;
+        }
+        offset += status;
+    }
+    if (status < 0) handle_error("write bwt");
+    free(bwt);
+    if (close(bwt_fd) < 0) handle_error("close bwt_fd");
 
     timestamp("[generate_from_file] suffix array");
     status = libsais64(string, lcp, len, 0, NULL);
     if (status < 0) {
         printf("sa error\n");
         munmap(string, total_length);
-        munmap(lcp, lcp_buffer_len);
-        // free(lcp);
+        free(lcp);
         return;
     }
-
 
     timestamp("[generate_from_file] plcp");
     i64 *plcp = arralloc(i64, total_length);
@@ -122,23 +113,27 @@ void generate_from_file(int argc, char *argv[]) {
         printf("plcp error\n");
         free(plcp);
         munmap(string, total_length);
-        munmap(lcp, lcp_buffer_len);
-        // free(lcp);
+        free(lcp);
         return;
     }
 
-
     timestamp("[generate_from_file] lcp");
     status = libsais64_lcp(plcp, lcp, lcp, len);
-
     free(plcp);
     munmap(string, total_length);
 
-    munmap(lcp, lcp_buffer_len);
-    // status = write(lcp_fd, lcp, lcp_buffer_len);
-    // free(lcp);
-    // if (status < 0) handle_error("write lcp");
-    // if (close(lcp_fd) < 0) handle_error("close lcp_fd");
+    offset = 0;
+    u8 *lcp_bytes = (u8 *)lcp;
+    while (offset < lcp_buffer_len) {
+        status = write(lcp_fd, lcp_bytes + offset, lcp_buffer_len - offset);
+        if (status <= 0) {
+            break;
+        }
+        offset += status;
+    }
+    if (status < 0) handle_error("write lcp");
+    free(lcp);
+    if (close(lcp_fd) < 0) handle_error("close lcp_fd");
 
     if (status < 0) {
         printf("lcp error\n");
